@@ -1,0 +1,31 @@
+# Environment and secrets
+.env
+.env.local
+.env.*.local
+
+# Browser profile and cache
+.fb-profile/
+.cache/
+
+# Node dependencies
+node_modules/
+package-lock.json
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Posting state (tracks which posts have been sent)
+# Uncomment to ignore: .posting-state.json
+
+# Session cookies (Facebook login state)
+# Uncomment to ignore: session.json
