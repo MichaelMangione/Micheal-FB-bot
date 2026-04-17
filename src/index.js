@@ -695,7 +695,7 @@ async function main() {
   }
 
   const launchOptions = {
-    headless: HEADLESS,
+    headless: HEADLESS || 'new',  // Force headless mode; use 'new' for better container support
     userDataDir: USER_DATA_DIR,
     args: [
       '--no-sandbox',
@@ -705,7 +705,8 @@ async function main() {
       '--no-first-run',
       '--no-zygote',
       '--single-process',        // important for Railway
-      '--disable-extensions'
+      '--disable-extensions',
+      '--disable-web-resources'
     ],
     defaultViewport: { width: 1280, height: 900 },
   };
