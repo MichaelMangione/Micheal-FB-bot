@@ -32,7 +32,7 @@ export function loadScheduleConfig() {
   const scheduleFile = path.join(ROOT_DIR, 'schedule.json');
   const defaults = {
     scheduling: {
-      delayBetweenPostsMs: 21600000, // 6 hours
+      delayBetweenPostsMs: 14400000, // 4 hours
       postsPerDay: 5,
       enabled: true,
       mode: 'interval',
