@@ -694,7 +694,7 @@ async function main() {
   }
 
   const launchOptions = {
-    headless: HEADLESS || 'new',  // Force headless mode; use 'new' for better container support
+    headless: HEADLESS ? 'new' : false,  // 'new' for headless, false for visible window
     userDataDir: USER_DATA_DIR,
     args: [
       '--no-sandbox',
