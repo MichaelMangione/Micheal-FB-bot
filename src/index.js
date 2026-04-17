@@ -135,9 +135,12 @@ async function autoLoginIfNeeded(page) {
       const emailField = await page.$('input[name="email"], input[type="email"], #email');
       if (emailField) {
         await emailField.click({ clickCount: 3 });
+        await sleep(300);
         await page.keyboard.type(FB_EMAIL, { delay: 60 });
         console.log('[login] Email field filled');
+        await sleep(500);
         await tryClick(['button[name="login"]', 'button[type="submit"]', 'div[role="button"][aria-label*="Continue" i]']);
+        await sleep(2500);  // Wait for password field to load
       } else {
         console.log('[login] Email field not immediately visible');
       }
@@ -149,14 +152,26 @@ async function autoLoginIfNeeded(page) {
         'div[role="button"][aria-label*="Continue" i]',
         'div[role="button"][aria-label*="Log In" i]',
       ]);
+      await sleep(2000);  // Wait for password field to appear
 
       console.log('[login] ====== STEP 3: Looking for Password Field ======');
       const passwordField = await page.$('input[name="pass"], input[type="password"], #pass');
       if (passwordField) {
         await passwordField.click({ clickCount: 3 });
+        await sleep(300);
         await page.keyboard.type(FB_PASSWORD, { delay: 60 });
         console.log('[login] Password field filled');
-        await tryClick(['button[name="login"]', 'button[type="submit"]', 'div[role="button"][aria-label*="Log In" i]']);
+        await sleep(500);
+        
+        // Click login and wait for navigation
+        const loginButton = await page.$('button[name="login"]');
+        if (loginButton) {
+          console.log('[login] Clicking login button and waiting for navigation...');
+          await Promise.race([
+            page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {}),
+            sleep(8000)  // Wait up to 8 seconds for nav or redirect
+          ]);
+        }
       } else {
         console.log('[login] No password field found - already logged in or unexpected state');
       }
