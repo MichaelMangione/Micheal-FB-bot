@@ -694,7 +694,7 @@ async function main() {
     throw new Error('No posts to post: enable scheduling or set POST_TEXT.');
   }
 
-  const browser = await puppeteer.launch({
+  const launchOptions = {
     headless: HEADLESS,
     userDataDir: USER_DATA_DIR,
     args: [
@@ -708,7 +708,14 @@ async function main() {
       '--disable-extensions'
     ],
     defaultViewport: { width: 1280, height: 900 },
-  });
+  };
+
+  // Use system Chromium if PUPPETEER_EXECUTABLE_PATH is set (Railway)
+  if (process.env.PUPPETEER_EXECUTABLE_PATH) {
+    launchOptions.executablePath = process.env.PUPPETEER_EXECUTABLE_PATH;
+  }
+
+  const browser = await puppeteer.launch(launchOptions);
 
   const page = await browser.newPage();
   await page.setUserAgent(USER_AGENT);
