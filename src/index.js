@@ -1,6 +1,7 @@
 import puppeteer from 'puppeteer-extra';
 import StealthPlugin from 'puppeteer-extra-plugin-stealth';
 import fs from 'fs';
+import path from 'path';
 
 import {
   CAPTCHA_API_KEY,
@@ -687,6 +688,17 @@ async function navigateToGroupWithRetry(page, url, groupIndex) {
 async function main() {
   validateConfig();
 
+  // Clean up stale singleton lock file to prevent "profile in use" errors on container restart
+  const singletonLockPath = path.join(USER_DATA_DIR, 'SingletonLock');
+  try {
+    if (fs.existsSync(singletonLockPath)) {
+      fs.unlinkSync(singletonLockPath);
+      console.log('[startup] Cleaned up stale SingletonLock file');
+    }
+  } catch (err) {
+    console.warn('[startup] Could not clean SingletonLock:', err.message);
+  }
+
   const scheduleConfig = loadScheduleConfig();
   const schedulingEnabled = scheduleConfig.scheduling.enabled;
   const posts = schedulingEnabled ? loadPosts() : [];
@@ -720,7 +732,8 @@ async function main() {
       '--no-zygote',
       '--single-process',        // important for Railway
       '--disable-extensions',
-      '--disable-web-resources'
+      '--disable-web-resources',
+      '--disable-sync',          // Prevents singleton lock issues on container restart
     ],
     defaultViewport: { width: 1280, height: 900 },
   };

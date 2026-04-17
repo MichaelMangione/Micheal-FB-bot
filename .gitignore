@@ -3,8 +3,9 @@
 .env.local
 .env.*.local
 
-# Cache
+# Cache & Browser profiles
 .cache/
+.fb-profile/
 
 # Node dependencies
 node_modules/
