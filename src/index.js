@@ -713,6 +713,7 @@ async function main() {
   // Use system Chromium if PUPPETEER_EXECUTABLE_PATH is set (Railway)
   if (process.env.PUPPETEER_EXECUTABLE_PATH) {
     launchOptions.executablePath = process.env.PUPPETEER_EXECUTABLE_PATH;
+    console.log(`[puppeteer] Using Chromium at: ${launchOptions.executablePath}`);
   }
 
   const browser = await puppeteer.launch(launchOptions);
