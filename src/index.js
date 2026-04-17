@@ -701,7 +701,11 @@ async function main() {
       '--no-sandbox',
       '--disable-setuid-sandbox',
       '--disable-dev-shm-usage',
-      '--window-size=1280,900',
+      '--disable-gpu',
+      '--no-first-run',
+      '--no-zygote',
+      '--single-process',        // important for Railway
+      '--disable-extensions'
     ],
     defaultViewport: { width: 1280, height: 900 },
   });
