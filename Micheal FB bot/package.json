@@ -1,0 +1,23 @@
+{
+  "name": "facebook-automation-bot",
+  "version": "1.0.0",
+  "description": "Facebook group post automation with session persistence and 2captcha",
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "daemon": "node src/daemon.js",
+    "post-one": "node src/index.js",
+    "post-all": "node src/daemon.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "puppeteer": "^23.6.1",
+    "puppeteer-extra": "^3.3.6",
+    "puppeteer-extra-plugin-stealth": "^2.11.2",
+    "sharp": "^0.34.5"
+  }
+}
