@@ -12,7 +12,11 @@ dotenv.config({ path: path.join(ROOT_DIR, '.env'), override: true });
 export const CAPTCHA_API_KEY = process.env.CAPTCHA_API_KEY || '';
 export const FB_EMAIL = process.env.FB_EMAIL || '';
 export const FB_PASSWORD = process.env.FB_PASSWORD || '';
-export const HEADLESS = String(process.env.HEADLESS || 'false').toLowerCase() === 'true';
+
+// Force headless mode if running in a container or Railway (detect by /app path or NODE_ENV=production)
+const isContainer = process.cwd().startsWith('/app') || process.env.NODE_ENV === 'production';
+const headlessEnv = String(process.env.HEADLESS || 'false').toLowerCase() === 'true';
+export const HEADLESS = isContainer ? true : headlessEnv;  // Always headless in containers
 export const TARGET_GROUP_URL = process.env.TARGET_GROUP_URL || '';
 
 // Multi-group support: comma-separated list in TARGET_GROUP_URLS, falls back to TARGET_GROUP_URL.
