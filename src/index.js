@@ -734,9 +734,15 @@ async function main() {
       '--disable-extensions',
       '--disable-web-resources',
       '--disable-sync',          // Prevents singleton lock issues on container restart
+      '--disable-blink-features=AutomationControlled',
+      '--no-service-autorun',
+      '--disable-dbus',          // Disable DBus to avoid socket errors
     ],
     defaultViewport: { width: 1280, height: 900 },
   };
+
+  // Debug: Log HEADLESS setting
+  console.log(`[puppeteer] HEADLESS mode: ${HEADLESS ? 'enabled (headless=new)' : 'disabled (visible window)'}`);
 
   // Use system Chromium if PUPPETEER_EXECUTABLE_PATH is set (Railway)
   if (process.env.PUPPETEER_EXECUTABLE_PATH) {

@@ -17,6 +17,11 @@ export const FB_PASSWORD = process.env.FB_PASSWORD || '';
 const isContainer = process.cwd().startsWith('/app') || process.env.NODE_ENV === 'production';
 const headlessEnv = String(process.env.HEADLESS || 'false').toLowerCase() === 'true';
 export const HEADLESS = isContainer ? true : headlessEnv;  // Always headless in containers
+
+// Debug logging
+if (typeof process !== 'undefined' && process.env.DAEMON) {
+  console.log(`[config] Container detected: ${isContainer}, CWD: ${process.cwd()}, HEADLESS env: ${process.env.HEADLESS || 'undefined'}, Final HEADLESS: ${HEADLESS}`);
+}
 export const TARGET_GROUP_URL = process.env.TARGET_GROUP_URL || '';
 
 // Multi-group support: comma-separated list in TARGET_GROUP_URLS, falls back to TARGET_GROUP_URL.
