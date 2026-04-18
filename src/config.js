@@ -13,15 +13,13 @@ export const CAPTCHA_API_KEY = process.env.CAPTCHA_API_KEY || '';
 export const FB_EMAIL = process.env.FB_EMAIL || '';
 export const FB_PASSWORD = process.env.FB_PASSWORD || '';
 
-// Force headless mode if running in a container or Railway (detect by /app path or NODE_ENV=production)
-const isContainer = process.cwd().startsWith('/app') || process.env.NODE_ENV === 'production';
-const headlessEnv = String(process.env.HEADLESS || 'false').toLowerCase() === 'true';
-export const HEADLESS = isContainer ? true : headlessEnv;  // Always headless in containers
+// Determine headless mode: Always headless in container (/app path), otherwise use HEADLESS env var
+const isContainer = process.cwd().startsWith('/app');
+const headlessFromEnv = String(process.env.HEADLESS || 'false').toLowerCase() === 'true';
+export const HEADLESS = isContainer || headlessFromEnv;  // Headless if in container OR if HEADLESS=true
 
-// Debug logging
-if (typeof process !== 'undefined' && process.env.DAEMON) {
-  console.log(`[config] Container detected: ${isContainer}, CWD: ${process.cwd()}, HEADLESS env: ${process.env.HEADLESS || 'undefined'}, Final HEADLESS: ${HEADLESS}`);
-}
+// Always log for debugging (no condition)
+console.log(`[config] isContainer=${isContainer}, cwd=${process.cwd()}, HEADLESS_env=${process.env.HEADLESS}, final HEADLESS=${HEADLESS}`);
 export const TARGET_GROUP_URL = process.env.TARGET_GROUP_URL || '';
 
 // Multi-group support: comma-separated list in TARGET_GROUP_URLS, falls back to TARGET_GROUP_URL.

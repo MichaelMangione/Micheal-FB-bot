@@ -724,6 +724,7 @@ async function main() {
     headless: HEADLESS ? 'new' : false,  // 'new' for headless, false for visible window
     userDataDir: USER_DATA_DIR,
     args: [
+      ...(HEADLESS ? ['--headless'] : []),  // Explicitly add --headless flag when HEADLESS=true
       '--no-sandbox',
       '--disable-setuid-sandbox',
       '--disable-dev-shm-usage',
@@ -736,13 +737,13 @@ async function main() {
       '--disable-sync',          // Prevents singleton lock issues on container restart
       '--disable-blink-features=AutomationControlled',
       '--no-service-autorun',
-      '--disable-dbus',          // Disable DBus to avoid socket errors
     ],
     defaultViewport: { width: 1280, height: 900 },
   };
 
-  // Debug: Log HEADLESS setting
-  console.log(`[puppeteer] HEADLESS mode: ${HEADLESS ? 'enabled (headless=new)' : 'disabled (visible window)'}`);
+  // Debug: Log HEADLESS setting and args
+  console.log(`[puppeteer] HEADLESS mode: ${HEADLESS ? 'ENABLED' : 'DISABLED'}`);
+  console.log(`[puppeteer] Launch args: ${JSON.stringify(launchOptions.args.slice(0, 5))}...`);
 
   // Use system Chromium if PUPPETEER_EXECUTABLE_PATH is set (Railway)
   if (process.env.PUPPETEER_EXECUTABLE_PATH) {
