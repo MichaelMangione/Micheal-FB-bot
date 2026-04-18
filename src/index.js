@@ -764,11 +764,20 @@ async function main() {
   await autoLoginIfNeeded(page);
   await sleep(2000);
 
-  if (!(await isLoggedInState(page))) {
-    const ok = await waitUntilLoggedIn(page);
-    if (!ok) {
-      await browser.close();
-      throw new Error('Login was not completed.');
+  // In headless/container mode, don't wait for manual input - just try auto-login once
+  if (HEADLESS) {
+    // On Railway: auto-login only, no manual fallback
+    if (!(await isLoggedInState(page))) {
+      console.log('[session] ⚠️ Auto-login failed in container mode. Continuing anyway...');
+    }
+  } else {
+    // Local dev: allow manual login if auto-login fails
+    if (!(await isLoggedInState(page))) {
+      const ok = await waitUntilLoggedIn(page);
+      if (!ok) {
+        await browser.close();
+        throw new Error('Login was not completed.');
+      }
     }
   }
 
@@ -824,13 +833,25 @@ async function main() {
           endTimer(`Group ${i + 1} captcha`);
 
           if (isLoginOrCheckpointUrl(groupPage.url()) || !(await isLoggedInState(groupPage))) {
-            await ensureFreshLogin(groupPage, 'Session expired.');
+            // Session expired: refresh from main Facebook page and restore cookies
+            console.log(`[group ${i + 1}] 🔄 Session expired, refreshing from main page...`);
+            await navigateToGroupWithRetry(groupPage, 'https://www.facebook.com/', i + 1);
+            
+            // Restore fresh cookies
+            const freshCookies = await loadSessionFromDisk();
+            if (freshCookies?.length) {
+              try {
+                await groupPage.setCookie(...freshCookies);
+                console.log(`[group ${i + 1}] ✅ Restored cookies from session`);
+              } catch (err) {
+                console.warn(`[group ${i + 1}] Cookie restore warning:`, err.message);
+              }
+            }
+            
+            // Navigate back to group with fresh session
             await sleep(1000);
-            await autoLoginIfNeeded(groupPage);
-            await saveSessionCookies(groupPage);
             await navigateToGroupWithRetry(groupPage, groupUrl, i + 1);
             await autoLoginIfNeeded(groupPage);
-            await saveSessionCookies(groupPage);
             await resolveCaptchasUntilClear(groupPage, CAPTCHA_API_KEY);
           }
 
