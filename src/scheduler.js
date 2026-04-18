@@ -106,7 +106,14 @@ export function loadPostingState() {
 
   try {
     const data = fs.readFileSync(stateFile, 'utf-8');
-    return JSON.parse(data);
+    const parsed = JSON.parse(data);
+    // Ensure all required properties exist (merge with defaults)
+    return {
+      lastPostTime: parsed.lastPostTime ?? null,
+      postsInLast24h: parsed.postsInLast24h ?? 0,
+      lastResetTime: parsed.lastResetTime ?? Date.now(),
+      completedPostIds: Array.isArray(parsed.completedPostIds) ? parsed.completedPostIds : [],
+    };
   } catch {
     return {
       lastPostTime: null,
@@ -164,6 +171,7 @@ export function updateStateAfterPost(state, postId) {
  * Get next post to post (excluding already completed ones)
  */
 export function getNextPost(posts, state) {
-  const nextPost = posts.find((p) => !state.completedPostIds.includes(p.id));
+  const completedIds = state?.completedPostIds || [];
+  const nextPost = posts.find((p) => !completedIds.includes(p.id));
   return nextPost || null;
 }
