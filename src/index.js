@@ -257,8 +257,50 @@ async function autoLoginIfNeeded(page) {
             sleep(8000)
           ]);
           
-          // Check if we successfully logged in
+          // Check if we're on a two-step verification page (reCAPTCHA security checkpoint)
           await sleep(1000);
+          const pageUrl = page.url();
+          if (pageUrl.includes('two_step_verification') || pageUrl.includes('checkpoint')) {
+            console.log(`[login] ⚠️ Two-step verification required! URL: ${pageUrl}`);
+            console.log('[login] Waiting for reCAPTCHA to load...');
+            
+            // Wait for reCAPTCHA to appear
+            try {
+              await page.waitForFunction(
+                () => {
+                  // Check for reCAPTCHA or Google frame
+                  const hasRecaptcha = !!document.querySelector('[data-sitekey]') || 
+                                      !!document.querySelector('iframe[src*="recaptcha"]') ||
+                                      !!document.querySelector('[class*="recaptcha"]');
+                  return hasRecaptcha;
+                },
+                { timeout: 5000 }
+              ).catch(() => console.log('[login] reCAPTCHA load timeout, attempting solve anyway...'));
+            } catch {
+              // Continue anyway
+            }
+            
+            console.log('[login] Attempting to solve reCAPTCHA...');
+            
+            // Try to solve any reCAPTCHA on this page
+            try {
+              const captchaSolved = await resolveCaptchasUntilClear(page, CAPTCHA_API_KEY);
+              if (captchaSolved) {
+                console.log('[login] ✓ reCAPTCHA solved, waiting for verification...');
+                // Wait for page to navigate after CAPTCHA solution
+                await Promise.race([
+                  page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {}),
+                  sleep(5000)
+                ]);
+              } else {
+                console.log('[login] ⚠️ No reCAPTCHA detected on verification page');
+              }
+            } catch (captchaErr) {
+              console.warn(`[login] CAPTCHA solving error: ${captchaErr.message}`);
+            }
+          }
+          
+          // Check if we successfully logged in
           const stillOnLogin = !!(await page.$('input[name="email"], input[name="pass"]'));
           console.log(`[login] After login wait - still on login form: ${stillOnLogin}`);
         } else {

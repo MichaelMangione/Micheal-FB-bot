@@ -1,63 +1,33 @@
 [
   {
     "name": "fr",
-    "value": "1TlUiBV89dhvIMabE.AWcwrQ-rSetdMQEytJ5-FPH5isnw6KySfHUDbT2INj6bcZIqdOw.Bp4sN5..AAA.0.0.Bp4sN5.AWdjEFbELuohNDt6vUKIWQ9hsL0",
+    "value": "1fXe1vIXAWbKLOAH7.AWdeJbq3T9vwPQ3nd1XmS8h8e3dpeGdEm6nkdGMt54WWkZ7pmFA.Bp5k2d..AAA.0.0.Bp5k3a.AWcLO1UniJkIEw0sV8Hectxiwrw",
     "domain": ".facebook.com",
     "path": "/",
-    "expires": 1784244856.895713,
+    "expires": 1784476890.300047,
     "size": 122,
     "httpOnly": true,
     "secure": true,
     "session": false,
     "sameSite": "None",
     "priority": "Medium",
-    "sameParty": false,
-    "sourceScheme": "Secure"
-  },
-  {
-    "name": "dpr",
-    "value": "0.5000000149011612",
-    "domain": ".facebook.com",
-    "path": "/",
-    "expires": 1777073654,
-    "size": 21,
-    "httpOnly": false,
-    "secure": true,
-    "session": false,
-    "sameSite": "None",
-    "priority": "Medium",
-    "sameParty": false,
-    "sourceScheme": "Secure"
+    "sourceScheme": "Secure",
+    "sameParty": false
   },
   {
     "name": "c_user",
     "value": "61561381861771",
     "domain": ".facebook.com",
     "path": "/",
-    "expires": 1808004856.895431,
+    "expires": 1808236828.764799,
     "size": 20,
     "httpOnly": false,
     "secure": true,
     "session": false,
     "sameSite": "None",
     "priority": "Medium",
-    "sameParty": false,
-    "sourceScheme": "Secure"
-  },
-  {
-    "name": "sb",
-    "value": "IfHCad9NToWEkPN__xWQ3bcl",
-    "domain": ".facebook.com",
-    "path": "/",
-    "expires": 1811028854.085994,
-    "size": 26,
-    "httpOnly": true,
-    "secure": true,
-    "session": false,
-    "sameSite": "None",
-    "priority": "Medium",
-    "sameParty": false,
-    "sourceScheme": "Secure"
+    "sourceScheme": "Secure",
+    "sameParty": false
   },
   {
     "name": "datr",
@@ -71,8 +41,23 @@
     "session": false,
     "sameSite": "None",
     "priority": "Medium",
-    "sameParty": false,
-    "sourceScheme": "Secure"
+    "sourceScheme": "Secure",
+    "sameParty": false
+  },
+  {
+    "name": "sb",
+    "value": "IfHCad9NToWEkPN__xWQ3bcl",
+    "domain": ".facebook.com",
+    "path": "/",
+    "expires": 1811260826.018302,
+    "size": 26,
+    "httpOnly": true,
+    "secure": true,
+    "session": false,
+    "sameSite": "None",
+    "priority": "Medium",
+    "sourceScheme": "Secure",
+    "sameParty": false
   },
   {
     "name": "ps_l",
@@ -86,23 +71,38 @@
     "session": false,
     "sameSite": "Lax",
     "priority": "Medium",
-    "sameParty": false,
-    "sourceScheme": "Secure"
+    "sourceScheme": "Secure",
+    "sameParty": false
   },
   {
     "name": "xs",
-    "value": "37%3ARzYktoDFba-X_w%3A2%3A1776468852%3A-1%3A-1%3A%3AAcwzRLG4Xk3xriPN-EXAIRpcaydte0Rl7lvxRzuItg",
+    "value": "50%3AkizG23MLLwdDAA%3A2%3A1776700823%3A-1%3A-1%3A%3AAcyXP-w3oOwSm2-UgqeQ6tW_O4Iy-N4mlm3zJTNgrQ",
     "domain": ".facebook.com",
     "path": "/",
-    "expires": 1808004856.896101,
+    "expires": 1808236828.765255,
     "size": 96,
     "httpOnly": true,
     "secure": true,
     "session": false,
     "sameSite": "None",
     "priority": "Medium",
-    "sameParty": false,
-    "sourceScheme": "Secure"
+    "sourceScheme": "Secure",
+    "sameParty": false
+  },
+  {
+    "name": "dpr",
+    "value": "1.375",
+    "domain": ".facebook.com",
+    "path": "/",
+    "expires": 1777305702,
+    "size": 8,
+    "httpOnly": false,
+    "secure": true,
+    "session": false,
+    "sameSite": "None",
+    "priority": "Medium",
+    "sourceScheme": "Secure",
+    "sameParty": false
   },
   {
     "name": "ps_n",
@@ -116,22 +116,36 @@
     "session": false,
     "sameSite": "None",
     "priority": "Medium",
-    "sameParty": false,
-    "sourceScheme": "Secure"
+    "sourceScheme": "Secure",
+    "sameParty": false
+  },
+  {
+    "name": "presence",
+    "value": "C%7B%22t3%22%3A%5B%5D%2C%22utc3%22%3A1776700904986%2C%22v%22%3A1%7D",
+    "domain": ".facebook.com",
+    "path": "/",
+    "expires": -1,
+    "size": 75,
+    "httpOnly": false,
+    "secure": true,
+    "session": true,
+    "priority": "Medium",
+    "sourceScheme": "Secure",
+    "sameParty": false
   },
   {
     "name": "wd",
-    "value": "1280x900",
+    "value": "1054x726",
     "domain": ".facebook.com",
     "path": "/",
-    "expires": 1777060285,
+    "expires": 1777305702,
     "size": 10,
     "httpOnly": false,
     "secure": true,
     "session": false,
     "sameSite": "Lax",
     "priority": "Medium",
-    "sameParty": false,
-    "sourceScheme": "Secure"
+    "sourceScheme": "Secure",
+    "sameParty": false
   }
 ]
