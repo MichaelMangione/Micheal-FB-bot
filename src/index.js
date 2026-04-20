@@ -123,12 +123,15 @@ async function autoLoginIfNeeded(page) {
           if (handle) {
             try {
               await handle.click();
+              console.log(`[login] ✓ Clicked: ${selector}`);
               return true;
-            } catch {
+            } catch (err) {
+              console.log(`[login] ✗ Click failed for ${selector}: ${err.message}`);
               /* continue */
             }
           }
         }
+        console.log(`[login] ✗ No clickable button found from: ${selectors.join(', ')}`);
         return false;
       };
 
@@ -162,19 +165,29 @@ async function autoLoginIfNeeded(page) {
         await sleep(300);
         await page.keyboard.type(FB_PASSWORD, { delay: 60 });
         console.log('[login] Password field filled');
-        await sleep(500);
+        await sleep(800);
         
-        // Click login and wait for navigation
-        const loginButton = await page.$('button[name="login"]');
-        if (loginButton) {
-          console.log('[login] Clicking login button and waiting for navigation...');
+        // Try to find and click the login button with multiple selectors
+        const loginClicked = await tryClick([
+          'button[name="login"]',
+          'button[type="submit"]',
+          'div[role="button"][aria-label*="Log In" i]',
+          'button[aria-label*="Log In" i]',
+          'div[data-testid="login_button"]'
+        ]);
+
+        if (loginClicked) {
+          console.log('[login] Waiting for login to process...');
+          // Wait for page to navigate to main feed or handle any redirects
           await Promise.race([
             page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {}),
-            sleep(8000)  // Wait up to 8 seconds for nav or redirect
+            page.waitForFunction(() => document.querySelector('[role="feed"], #main, [data-testid="primary_column"]'), { timeout: 15000 }).catch(() => {})
           ]);
+        } else {
+          console.log('[login] ⚠️ Could not find login button - may already be logged in');
         }
       } else {
-        console.log('[login] No password field found - already logged in or unexpected state');
+        console.log('[login] No password field found - page state unclear');
       }
 
       await sleep(2000);
