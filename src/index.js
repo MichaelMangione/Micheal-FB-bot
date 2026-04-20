@@ -84,8 +84,18 @@ async function restoreSessionCookies(page) {
 async function isLoggedInState(page) {
   try {
     const cookies = await page.cookies();
-    return hasUserCookie(cookies) && !isLoginOrCheckpointUrl(page.url());
-  } catch {
+    const hasUser = hasUserCookie(cookies);
+    const url = page.url();
+    const isLoginPage = isLoginOrCheckpointUrl(url);
+    const loggedIn = hasUser && !isLoginPage;
+    
+    if (!loggedIn) {
+      console.log(`[isLoggedInState-debug] hasUserCookie=${hasUser}, isLoginPage=${isLoginPage}, url=${url}`);
+    }
+    
+    return loggedIn;
+  } catch (err) {
+    console.log(`[isLoggedInState-error] ${err.message}`);
     return false;
   }
 }
@@ -841,15 +851,26 @@ async function main() {
   await autoLoginIfNeeded(page);
   await sleep(2000);
 
+  // Debug: Check logged-in state after auto-login
+  const loggedInCheck = await isLoggedInState(page);
+  const debugCookies = await page.cookies();
+  const userCookie = debugCookies.find(c => c.name === 'c_user');
+  const pageUrl = page.url();
+  console.log(`[session-debug] URL: ${pageUrl}, has c_user: ${!!userCookie}, isLoggedInState: ${loggedInCheck}`);
+  if (userCookie) {
+    console.log(`[session-debug] c_user value: ${userCookie.value}`);
+  }
+
   // In headless/container mode, don't wait for manual input - just try auto-login once
   if (HEADLESS) {
     // On Railway: auto-login only, no manual fallback
-    if (!(await isLoggedInState(page))) {
-      console.log('[session] ⚠️ Auto-login failed in container mode. Continuing anyway...');
+    if (!loggedInCheck) {
+      console.log('[session] ⚠️ Auto-login check failed. Current state: URL=' + pageUrl + ', hasCookie=' + !!userCookie);
+      console.log('[session] ⚠️ Attempting to continue anyway... May fail at group posting.');
     }
   } else {
     // Local dev: allow manual login if auto-login fails
-    if (!(await isLoggedInState(page))) {
+    if (!loggedInCheck) {
       const ok = await waitUntilLoggedIn(page);
       if (!ok) {
         await browser.close();
