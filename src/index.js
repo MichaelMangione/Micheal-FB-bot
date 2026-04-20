@@ -177,24 +177,49 @@ async function autoLoginIfNeeded(page) {
         console.log('[login] Password field filled');
         await sleep(800);
         
-        // Try to find and click the login button with multiple selectors
-        const loginClicked = await tryClick([
-          'button[name="login"]',
-          'button[type="submit"]',
-          'div[role="button"][aria-label*="Log In" i]',
-          'button[aria-label*="Log In" i]',
-          'div[data-testid="login_button"]'
-        ]);
-
-        if (loginClicked) {
-          console.log('[login] Waiting for login to process...');
-          // Wait for page to navigate to main feed or handle any redirects
-          await Promise.race([
-            page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {}),
-            page.waitForFunction(() => document.querySelector('[role="feed"], #main, [data-testid="primary_column"]'), { timeout: 15000 }).catch(() => {})
+        // Try multiple methods to submit the form
+        let formSubmitted = false;
+        
+        // Method 1: Try pressing Enter key
+        try {
+          await page.keyboard.press('Enter');
+          console.log('[login] Submitted form via Enter key');
+          formSubmitted = true;
+        } catch {
+          console.log('[login] Enter key submit failed');
+        }
+        
+        // Method 2: If Enter didn't work, try the login button
+        if (!formSubmitted) {
+          const loginClicked = await tryClick([
+            'button[name="login"]',
+            'button[type="submit"]',
+            'div[role="button"][aria-label*="Log In" i]',
+            'button[aria-label*="Log In" i]',
+            'div[data-testid="login_button"]'
           ]);
+          
+          if (loginClicked) {
+            console.log('[login] Form submitted via button click');
+            formSubmitted = true;
+          }
+        }
+
+        if (formSubmitted) {
+          console.log('[login] Waiting for page to load after login (max 15s)...');
+          // Wait for navigation or page to load new content
+          await Promise.race([
+            page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => console.log('[login] No navigation detected')),
+            page.waitForFunction(() => !document.querySelector('input[name="email"]') && !document.querySelector('input[name="pass"]'), { timeout: 15000 }).catch(() => console.log('[login] Form fields still present')),
+            sleep(8000)
+          ]);
+          
+          // Check if we successfully logged in
+          await sleep(1000);
+          const stillOnLogin = !!(await page.$('input[name="email"], input[name="pass"]'));
+          console.log(`[login] After login wait - still on login form: ${stillOnLogin}`);
         } else {
-          console.log('[login] ⚠️ Could not find login button - may already be logged in');
+          console.log('[login] ⚠️ Could not submit login form by any method');
         }
       } else {
         console.log('[login] No password field found - page state unclear');
@@ -215,6 +240,13 @@ async function autoLoginIfNeeded(page) {
 
 async function openGroupComposer(page) {
   await randomMouseMove(page);
+  
+  // CRITICAL: Check if we're on a login page - this explains why composer can't be found
+  const pageUrl = page.url();
+  if (pageUrl.includes('/login') || pageUrl.includes('/login.php')) {
+    console.error(`[composer] ❌ CRITICAL: On login page, not group page! URL: ${pageUrl}`);
+    throw new Error('Still on Facebook login page - session may have expired or login failed.');
+  }
 
   const openers = [
     // Current Facebook selectors (2024+)
