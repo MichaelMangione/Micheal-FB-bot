@@ -211,6 +211,25 @@ async function openGroupComposer(page) {
     const alreadyOpen = await page.$('[role="dialog"] [role="textbox"], [role="dialog"] div[contenteditable="true"]');
     if (alreadyOpen) return;
 
+    // Debug: Check page state on first attempt
+    if (attempt === 1) {
+      const pageUrl = page.url();
+      const buttonCount = await page.$$eval('[role="button"]', els => els.length).catch(() => 0);
+      const divCount = await page.$$eval('div[role="button"]', els => els.length).catch(() => 0);
+      console.log(`[composer-debug] URL: ${pageUrl}, total [role="button"]: ${buttonCount}, div[role="button"]: ${divCount}`);
+      
+      // Log what text-based buttons we see
+      const visibleButtons = await page.evaluate(() => {
+        const buttons = Array.from(document.querySelectorAll('[role="button"], button'));
+        return buttons.slice(0, 10).map(b => ({
+          aria: b.getAttribute('aria-label'),
+          textSnippet: (b.textContent || '').substring(0, 30).trim(),
+          testid: b.getAttribute('data-testid')
+        }));
+      });
+      console.log(`[composer-debug] Sample buttons:`, JSON.stringify(visibleButtons, null, 2));
+    }
+
     // Try selector-based approach
     for (const selector of openers) {
       const el = await page.$(selector);
@@ -901,6 +920,22 @@ async function main() {
           }
 
           console.log(`[group ${i + 1}] Opening composer...`);
+          
+          // Add explicit wait for page content to render after login
+          try {
+            await Promise.race([
+              groupPage.waitForSelector('[role="button"]', { timeout: 8000 }),
+              groupPage.waitForFunction(() => document.querySelectorAll('[role="button"]').length > 3, { timeout: 8000 })
+            ]).catch(() => {
+              // UI might take time, but continue anyway
+              console.warn(`[group ${i + 1}] ⚠️ Waiting for UI elements timed out, continuing...`);
+            });
+          } catch {
+            // Ignore - page might still be usable
+          }
+          
+          await sleep(1500); // Give page time to stabilize after login
+          
           startTimer(`Group ${i + 1} composer open`);
           await openGroupComposer(groupPage);
           endTimer(`Group ${i + 1} composer open`);
