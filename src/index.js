@@ -144,6 +144,32 @@ async function autoLoginIfNeeded(page) {
         console.log(`[login] ✗ No clickable button found from: ${selectors.join(', ')}`);
         return false;
       };
+      
+      const tryClickByText = async (textPatterns) => {
+        for (const pattern of textPatterns) {
+          const found = await page.evaluate((text) => {
+            const elements = document.querySelectorAll('div, button, a, [role="button"]');
+            for (const el of elements) {
+              if (el.textContent && el.textContent.toLowerCase().includes(text.toLowerCase())) {
+                // Make sure it's visible
+                const rect = el.getBoundingClientRect();
+                if (rect.width > 5 && rect.height > 5) {
+                  el.click();
+                  return true;
+                }
+              }
+            }
+            return false;
+          }, pattern);
+          
+          if (found) {
+            console.log(`[login] ✓ Clicked by text: "${pattern}"`);
+            return true;
+          }
+        }
+        console.log(`[login] ✗ No clickable element found with text: ${textPatterns.join(', ')}`);
+        return false;
+      };
 
       console.log('[login] ====== STEP 1: Looking for Email Field ======');
       const emailField = await page.$('input[name="email"], input[type="email"], #email');
@@ -151,7 +177,7 @@ async function autoLoginIfNeeded(page) {
         await emailField.click({ clickCount: 3 });
         await sleep(300);
         await page.keyboard.type(FB_EMAIL, { delay: 60 });
-        console.log('[login] Email field filled');
+        console.log('[login] ✓ Email field filled');
         await sleep(500);
         await tryClick(['button[name="login"]', 'button[type="submit"]', 'div[role="button"][aria-label*="Continue" i]']);
         await sleep(2500);  // Wait for password field to load
@@ -160,12 +186,19 @@ async function autoLoginIfNeeded(page) {
       }
 
       console.log('[login] ====== STEP 2: Looking for Continue Button ======');
-      await tryClick([
+      // Try selectors first, then text-based fallback
+      let continueClicked = await tryClick([
         'button[name="login"]',
         'button[type="submit"]',
         'div[role="button"][aria-label*="Continue" i]',
         'div[role="button"][aria-label*="Log In" i]',
       ]);
+      
+      if (!continueClicked) {
+        console.log('[login] Selector-based continue failed, trying text-based...');
+        continueClicked = await tryClickByText(['Continue', 'Next', 'Log in']);
+      }
+      
       await sleep(2000);  // Wait for password field to appear
 
       console.log('[login] ====== STEP 3: Looking for Password Field ======');
@@ -174,7 +207,7 @@ async function autoLoginIfNeeded(page) {
         await passwordField.click({ clickCount: 3 });
         await sleep(300);
         await page.keyboard.type(FB_PASSWORD, { delay: 60 });
-        console.log('[login] Password field filled');
+        console.log('[login] ✓ Password field filled');
         await sleep(800);
         
         // Try multiple methods to submit the form
@@ -183,13 +216,13 @@ async function autoLoginIfNeeded(page) {
         // Method 1: Try pressing Enter key
         try {
           await page.keyboard.press('Enter');
-          console.log('[login] Submitted form via Enter key');
+          console.log('[login] ✓ Submitted form via Enter key');
           formSubmitted = true;
         } catch {
           console.log('[login] Enter key submit failed');
         }
         
-        // Method 2: If Enter didn't work, try the login button
+        // Method 2: If Enter didn't work, try the login button by selector
         if (!formSubmitted) {
           const loginClicked = await tryClick([
             'button[name="login"]',
@@ -200,7 +233,17 @@ async function autoLoginIfNeeded(page) {
           ]);
           
           if (loginClicked) {
-            console.log('[login] Form submitted via button click');
+            console.log('[login] ✓ Form submitted via button click');
+            formSubmitted = true;
+          }
+        }
+        
+        // Method 3: If selectors didn't work, try text-based
+        if (!formSubmitted) {
+          console.log('[login] Selector-based login failed, trying text-based...');
+          const loginByText = await tryClickByText(['Log in', 'Log In', 'Continue']);
+          if (loginByText) {
+            console.log('[login] ✓ Form submitted via text-based click');
             formSubmitted = true;
           }
         }
