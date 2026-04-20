@@ -194,18 +194,24 @@ async function openGroupComposer(page) {
   await randomMouseMove(page);
 
   const openers = [
+    // Current Facebook selectors (2024+)
     'div[role="button"][aria-label*="Create a post" i]',
     'div[role="button"][aria-label*="Write something" i]',
     'div[role="button"][aria-label*="Create post" i]',
+    'div[role="button"][aria-label*="What\'s on your mind" i]',
+    'div[data-placer*="composer" i]',
+    '[data-testid="create_post_button"]',
+    '[data-testid="status_composer_container"] [role="button"]',
     'a[aria-label*="Create a post" i]',
     'button[aria-label*="Create a post" i]',
   ];
 
-  // Composer can be slow to render in some groups, so retry a few times.
-  for (let attempt = 1; attempt <= 3; attempt++) {
+  // Composer can be slow to render in some groups, so retry many times.
+  for (let attempt = 1; attempt <= 5; attempt++) {
     const alreadyOpen = await page.$('[role="dialog"] [role="textbox"], [role="dialog"] div[contenteditable="true"]');
     if (alreadyOpen) return;
 
+    // Try selector-based approach
     for (const selector of openers) {
       const el = await page.$(selector);
       if (el) {
@@ -218,28 +224,67 @@ async function openGroupComposer(page) {
       }
     }
 
-    // Fallback: click by visible text/aria across button-like elements.
+    // Fallback 1: Click by visible text in larger buttons/divs
     await page.evaluate(() => {
-      const candidates = ['create a post', 'write something', "what\'s on your mind", 'create post'];
-      for (const el of document.querySelectorAll('[role="button"], button, a')) {
+      const candidates = [
+        'create a post',
+        'write something',
+        "what's on your mind",
+        'share with your friends',
+        'create post',
+        'share a post'
+      ];
+      
+      // Find all interactive elements
+      const elements = document.querySelectorAll('[role="button"], button, [role="menuitem"], a, div[tabindex="0"]');
+      for (const el of elements) {
         const aria = (el.getAttribute('aria-label') || '').toLowerCase();
-        const text = (el.textContent || '').toLowerCase();
-        if (candidates.some((w) => aria.includes(w) || text.includes(w))) {
-          (el).click();
-          break;
+        const text = (el.textContent || '').toLowerCase().trim();
+        const dataTestId = (el.getAttribute('data-testid') || '').toLowerCase();
+        
+        // Check if this looks like a composer button
+        if (candidates.some((w) => aria.includes(w) || text.includes(w) || dataTestId.includes('composer'))) {
+          // Make sure it's visible and clickable
+          const rect = el.getBoundingClientRect();
+          if (rect.width > 10 && rect.height > 10) {
+            el.click();
+            break;
+          }
         }
       }
     });
 
+    await sleep(500);
+
+    // Fallback 2: Look for status composer container and click inside it
+    const composerFound = await page.evaluate(() => {
+      const composer = document.querySelector('[data-testid="status_composer_container"]') ||
+                       document.querySelector('[data-testid="create_post_button"]') ||
+                       document.querySelector('[role="region"]');
+      if (composer) {
+        // Try to find and click any button inside
+        const btns = composer.querySelectorAll('[role="button"], button');
+        if (btns.length > 0) {
+          btns[0].click();
+          return true;
+        }
+      }
+      return false;
+    });
+    
+    if (composerFound) {
+      await sleep(800);
+    }
+
     try {
       await page.waitForFunction(
         () => !!document.querySelector('[role="dialog"] [role="textbox"], [role="dialog"] div[contenteditable="true"]'),
-        { timeout: 5000 }
+        { timeout: 6000 }
       );
       return;
     } catch {
-      console.log(`[composer] Attempt ${attempt}/3 failed, retrying...`);
-      await sleep(1200);
+      console.log(`[composer] Attempt ${attempt}/5 failed, retrying...`);
+      await sleep(1500);
     }
   }
 
