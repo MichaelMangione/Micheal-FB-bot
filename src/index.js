@@ -736,7 +736,7 @@ async function submitPost(page, { requireImage = false, imagePath = null, groupI
 
   const waitForSubmitSignal = async () => {
     try {
-      const navPromise = page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 12000 }).catch(() => null);
+      const navPromise = page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => null);
       const uiPromise = page.waitForFunction(() => {
         const dialog = document.querySelector('[role="dialog"]');
         const bodyText = (document.body?.innerText || '').toLowerCase();
@@ -749,9 +749,20 @@ async function submitPost(page, { requireImage = false, imagePath = null, groupI
           bodyText.includes('your post is pending') ||
           bodyText.includes('post submitted') ||
           bodyText.includes('post sent for review') ||
-          bodyText.includes('your post is live');
-        return dialogClosed || hasPostedSignal;
-      }, { timeout: 12000 }).catch(() => null);
+          bodyText.includes('your post is live') ||
+          bodyText.includes('post has been published') ||
+          bodyText.includes('ready to share');
+
+        // Check if dialog content changed (indicates server processing or transition)
+        const postButton = dialog ? dialog.querySelector('[role="button"][aria-label="Post"]') : null;
+        const buttonDisabledOrHidden = postButton && (
+          postButton.getAttribute('aria-disabled') === 'true' ||
+          postButton.style.display === 'none' ||
+          postButton.offsetHeight === 0
+        );
+
+        return dialogClosed || hasPostedSignal || buttonDisabledOrHidden;
+      }, { timeout: 15000 }).catch(() => null);
 
       await Promise.race([navPromise, uiPromise]);
 
@@ -759,12 +770,21 @@ async function submitPost(page, { requireImage = false, imagePath = null, groupI
       const confirmed = await page.evaluate(() => {
         const dialog = document.querySelector('[role="dialog"]');
         const bodyText = (document.body?.innerText || '').toLowerCase();
+        const postButton = dialog ? dialog.querySelector('[role="button"][aria-label="Post"]') : null;
+        const buttonDisabledOrHidden = postButton && (
+          postButton.getAttribute('aria-disabled') === 'true' ||
+          postButton.style.display === 'none' ||
+          postButton.offsetHeight === 0
+        );
         return (
           !dialog ||
           bodyText.includes('your post is pending') ||
           bodyText.includes('post submitted') ||
           bodyText.includes('post sent for review') ||
-          bodyText.includes('your post is live')
+          bodyText.includes('your post is live') ||
+          bodyText.includes('post has been published') ||
+          bodyText.includes('ready to share') ||
+          buttonDisabledOrHidden
         );
       });
       return !!confirmed;
