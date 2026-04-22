@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
- * FULLY MANUAL Facebook Login & Cookie Saver
- * Simple: opens Facebook, you log in, you press ENTER, cookies are saved
+ * Semi-Automatic Facebook Login & Cookie Saver
+ * Auto-fills email/password, you solve security checks, then press ENTER
  */
 
 import puppeteer from 'puppeteer-extra';
@@ -18,6 +18,8 @@ dotenv.config({ path: path.join(__dirname, '.env') });
 
 const SESSION_FILE = path.join(__dirname, 'session.json');
 const USER_DATA_DIR = path.join(__dirname, '.fb-profile');
+const FB_EMAIL = process.env.FB_EMAIL || '';
+const FB_PASSWORD = process.env.FB_PASSWORD || '';
 
 puppeteer.use(StealthPlugin());
 
@@ -26,9 +28,17 @@ async function sleep(ms) {
 }
 
 async function main() {
-  console.log('\n📱 MANUAL FACEBOOK LOGIN\n');
-  console.log('This opens Facebook in a browser window.');
-  console.log('You manually log in, solve any reCAPTCHA, then press ENTER here.\n');
+  console.log('\n📱 SEMI-AUTOMATIC FACEBOOK LOGIN\n');
+  console.log('This script will:');
+  console.log('  1. Open Facebook');
+  console.log('  2. Auto-fill your email & password');
+  console.log('  3. Wait for YOU to solve security checks (if any)');
+  console.log('  4. Then press ENTER to save cookies\n');
+
+  if (!FB_EMAIL || !FB_PASSWORD) {
+    console.log('❌ Error: FB_EMAIL and FB_PASSWORD not set in .env file\n');
+    process.exit(1);
+  }
 
   const browser = await puppeteer.launch({
     headless: false,
@@ -40,13 +50,41 @@ async function main() {
   console.log('Opening Facebook...\n');
   await page.goto('https://www.facebook.com/', { waitUntil: 'networkidle2' });
 
-  console.log('✓ Facebook is now open in a browser window');
-  console.log('👉 Next steps:');
-  console.log('   1. Log in to your Facebook account');
-  console.log('   2. Solve any reCAPTCHA security checks');
-  console.log('   3. Wait until you see your Facebook home feed');
-  console.log('   4. Return to this terminal');
-  console.log('   5. Press ENTER to save your session\n');
+  console.log('✓ Facebook opened');
+  console.log('⏳ Auto-filling email & password...\n');
+
+  // Auto-fill email
+  try {
+    await page.waitForSelector('input[name="email"]', { timeout: 5000 });
+    await page.type('input[name="email"]', FB_EMAIL, { delay: 50 });
+    console.log('✓ Email filled');
+  } catch (e) {
+    console.log('⚠️  Could not find email field:', e.message);
+  }
+
+  // Auto-fill password
+  try {
+    await page.waitForSelector('input[name="pass"]', { timeout: 5000 });
+    await page.type('input[name="pass"]', FB_PASSWORD, { delay: 50 });
+    console.log('✓ Password filled');
+  } catch (e) {
+    console.log('⚠️  Could not find password field:', e.message);
+  }
+
+  // Click login button
+  try {
+    await page.waitForSelector('button[name="login"]', { timeout: 5000 });
+    await page.click('button[name="login"]');
+    console.log('✓ Login button clicked');
+  } catch (e) {
+    console.log('⚠️  Could not find login button:', e.message);
+  }
+
+  console.log('\n👉 Next steps:');
+  console.log('   1. If a security check appears (Captcha, 2FA, etc), solve it');
+  console.log('   2. Wait until you see your Facebook home feed');
+  console.log('   3. Return to this terminal');
+  console.log('   4. Press ENTER to save your session\n');
 
   // Wait for user to press ENTER
   await new Promise(r => process.stdin.once('data', r));

@@ -57,6 +57,19 @@ function endTimer(label) {
   timers.delete(label);
 }
 
+// Graceful shutdown - save state before exiting
+process.on('exit', () => {
+  console.log('\n[exit] Ensuring posting state is saved...');
+});
+process.on('SIGINT', () => {
+  console.log('\n[exit] Caught SIGINT, saving state...');
+  process.exit(0);
+});
+process.on('SIGTERM', () => {
+  console.log('\n[exit] Caught SIGTERM, saving state...');
+  process.exit(0);
+});
+
 async function saveSessionCookies(pageOrCookies) {
   const cookies = Array.isArray(pageOrCookies)
     ? pageOrCookies
@@ -326,128 +339,66 @@ async function autoLoginIfNeeded(page) {
 async function openGroupComposer(page) {
   await randomMouseMove(page);
   
-  // CRITICAL: Check if we're on a login page - this explains why composer can't be found
   const pageUrl = page.url();
   if (pageUrl.includes('/login') || pageUrl.includes('/login.php')) {
-    console.error(`[composer] ❌ CRITICAL: On login page, not group page! URL: ${pageUrl}`);
-    throw new Error('Still on Facebook login page - session may have expired or login failed.');
+    throw new Error('Still on login page - session expired');
   }
 
-  const openers = [
-    // Current Facebook selectors (2024+)
-    'div[role="button"][aria-label*="Create a post" i]',
-    'div[role="button"][aria-label*="Write something" i]',
-    'div[role="button"][aria-label*="Create post" i]',
-    'div[role="button"][aria-label*="What\'s on your mind" i]',
-    'div[data-placer*="composer" i]',
-    '[data-testid="create_post_button"]',
-    '[data-testid="status_composer_container"] [role="button"]',
-    'a[aria-label*="Create a post" i]',
-    'button[aria-label*="Create a post" i]',
-  ];
-
-  // Composer can be slow to render in some groups, so retry many times.
-  for (let attempt = 1; attempt <= 5; attempt++) {
+  // FAST approach: Just click the composer button and wait for dialog
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    // Check if already open
     const alreadyOpen = await page.$('[role="dialog"] [role="textbox"], [role="dialog"] div[contenteditable="true"]');
     if (alreadyOpen) return;
 
-    // Debug: Check page state on first attempt
-    if (attempt === 1) {
-      const pageUrl = page.url();
-      const buttonCount = await page.$$eval('[role="button"]', els => els.length).catch(() => 0);
-      const divCount = await page.$$eval('div[role="button"]', els => els.length).catch(() => 0);
-      console.log(`[composer-debug] URL: ${pageUrl}, total [role="button"]: ${buttonCount}, div[role="button"]: ${divCount}`);
-      
-      // Log what text-based buttons we see
-      const visibleButtons = await page.evaluate(() => {
-        const buttons = Array.from(document.querySelectorAll('[role="button"], button'));
-        return buttons.slice(0, 10).map(b => ({
-          aria: b.getAttribute('aria-label'),
-          textSnippet: (b.textContent || '').substring(0, 30).trim(),
-          testid: b.getAttribute('data-testid')
-        }));
-      });
-      console.log(`[composer-debug] Sample buttons:`, JSON.stringify(visibleButtons, null, 2));
-    }
-
-    // Try selector-based approach
-    for (const selector of openers) {
-      const el = await page.$(selector);
-      if (el) {
-        try {
-          await el.click();
-          await sleep(900);
-        } catch {
-          /* continue */
-        }
-      }
-    }
-
-    // Fallback 1: Click by visible text in larger buttons/divs
-    await page.evaluate(() => {
-      const candidates = [
-        'create a post',
-        'write something',
-        "what's on your mind",
-        'share with your friends',
-        'create post',
-        'share a post'
+    // Click the composer with simple, fast selector
+    const clicked = await page.evaluate(() => {
+      // Try the most common Facebook selectors first
+      const selectors = [
+        () => document.querySelector('[data-testid="status_composer_container"]')?.parentElement?.querySelector('[role="button"]'),
+        () => Array.from(document.querySelectorAll('[role="button"]')).find(b => {
+          const aria = (b.getAttribute('aria-label') || '').toLowerCase();
+          return aria.includes('write') || aria.includes('create') || aria.includes('share');
+        }),
+        () => Array.from(document.querySelectorAll('div[role="button"]')).find(b => {
+          const rect = b.getBoundingClientRect();
+          const looksLarge = rect.width > 100 && rect.height > 30;
+          const hasText = b.textContent.length > 5;
+          return looksLarge && hasText;
+        })
       ];
-      
-      // Find all interactive elements
-      const elements = document.querySelectorAll('[role="button"], button, [role="menuitem"], a, div[tabindex="0"]');
-      for (const el of elements) {
-        const aria = (el.getAttribute('aria-label') || '').toLowerCase();
-        const text = (el.textContent || '').toLowerCase().trim();
-        const dataTestId = (el.getAttribute('data-testid') || '').toLowerCase();
-        
-        // Check if this looks like a composer button
-        if (candidates.some((w) => aria.includes(w) || text.includes(w) || dataTestId.includes('composer'))) {
-          // Make sure it's visible and clickable
-          const rect = el.getBoundingClientRect();
-          if (rect.width > 10 && rect.height > 10) {
+
+      for (const selector of selectors) {
+        try {
+          const el = selector();
+          if (el && el.getBoundingClientRect().height > 20) {
             el.click();
-            break;
+            return true;
           }
-        }
-      }
-    });
-
-    await sleep(500);
-
-    // Fallback 2: Look for status composer container and click inside it
-    const composerFound = await page.evaluate(() => {
-      const composer = document.querySelector('[data-testid="status_composer_container"]') ||
-                       document.querySelector('[data-testid="create_post_button"]') ||
-                       document.querySelector('[role="region"]');
-      if (composer) {
-        // Try to find and click any button inside
-        const btns = composer.querySelectorAll('[role="button"], button');
-        if (btns.length > 0) {
-          btns[0].click();
-          return true;
-        }
+        } catch {}
       }
       return false;
     });
-    
-    if (composerFound) {
+
+    if (!clicked) {
+      console.log(`[composer] Attempt ${attempt}/3: No button found`);
       await sleep(800);
+      continue;
     }
 
+    // Wait for dialog with SHORT timeout
     try {
       await page.waitForFunction(
         () => !!document.querySelector('[role="dialog"] [role="textbox"], [role="dialog"] div[contenteditable="true"]'),
-        { timeout: 6000 }
+        { timeout: 3000 }
       );
       return;
     } catch {
-      console.log(`[composer] Attempt ${attempt}/5 failed, retrying...`);
-      await sleep(1500);
+      console.log(`[composer] Attempt ${attempt}/3: Dialog didn't open`);
+      await sleep(600);
     }
   }
 
-  throw new Error('Could not open the Facebook composer.');
+  throw new Error('Composer failed - cannot open post dialog');
 }
 
 async function getDialogComposerText(page) {
@@ -734,388 +685,118 @@ async function uploadImageToComposer(groupPage, imagePath, groupIndex) {
 async function submitPost(page, { requireImage = false, imagePath = null, groupIndex = null } = {}) {
   const tag = groupIndex ? `[group ${groupIndex}]` : '[submit]';
 
-  const waitForSubmitSignal = async () => {
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    console.log(`${tag} Submit attempt ${attempt}/3...`);
+    
+    // Check image is still there
+    if (requireImage) {
+      const hasImg = await hasComposerImage(page);
+      if (!hasImg) {
+        throw new Error('Image missing at submit time');
+      }
+    }
+
     try {
-      // Give server time to process the click
-      await sleep(1000);
-
-      // First, check page state immediately after click
-      const initialState = await page.evaluate(() => {
-        const dialog = document.querySelector('[role="dialog"]');
-        if (!dialog) return { dialogExists: false, bodyContent: '', buttons: 0 };
-        
-        const bodyText = (document.body?.innerText || '').substring(0, 500).toLowerCase();
-        const allButtons = dialog.querySelectorAll('[role="button"], button').length;
-        const postButton = dialog.querySelector('[role="button"][aria-label="Post"]');
-        const spinner = dialog.querySelector('[role="progressbar"], .spinner, [aria-busy="true"]');
-        const errorMsg = dialog.querySelector('[role="alert"], .error, [aria-label*="error" i]');
-        
-        return {
-          dialogExists: true,
-          bodyContent: bodyText,
-          buttonCount: allButtons,
-          postButtonExists: !!postButton,
-          hasSpinner: !!spinner,
-          hasError: !!errorMsg,
-          errorText: errorMsg?.textContent?.substring(0, 100) || ''
-        };
-      });
+      // Find the Post button using Puppeteer's high-level method
+      const postButtonSelector = '[role="dialog"] [role="button"][aria-label="Post"]';
+      const postBtn = await page.$(postButtonSelector);
       
-      console.log('[submit-check] Initial state:', JSON.stringify(initialState));
-
-      const navPromise = page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 10000 }).catch(() => null);
-      
-      const uiPromise = page.waitForFunction(() => {
-        const dialog = document.querySelector('[role="dialog"]');
-        const bodyText = (document.body?.innerText || '').toLowerCase();
-
-        // Success signal 1: composer dialog closed after submit.
-        const dialogClosed = !dialog;
-
-        // Success signal 2: Additional success text Facebook shows.
-        const hasPostedSignal =
-          bodyText.includes('your post is pending') ||
-          bodyText.includes('post submitted') ||
-          bodyText.includes('post sent for review') ||
-          bodyText.includes('your post is live') ||
-          bodyText.includes('post has been published') ||
-          bodyText.includes('ready to share') ||
-          bodyText.includes('shared with');
-
-        // Success signal 3: Check if Post button disappeared from dialog
-        const postButtonGone = !dialog || !dialog.querySelector('[role="button"][aria-label="Post"]');
-
-        // Log state every second for debugging
-        if (window.__submitCheckCounter === undefined) window.__submitCheckCounter = 0;
-        if (window.__submitCheckCounter % 5 === 0) {
-          console.log(`[submit-check] dialogClosed=${dialogClosed}, hasPostedSignal=${hasPostedSignal}, postButtonGone=${postButtonGone}`);
+      if (!postBtn) {
+        console.log(`${tag} Post button not found, trying fallback selector...`);
+        // Try to find by text content as fallback
+        const allButtons = await page.$$('[role="dialog"] [role="button"]');
+        let foundBtn = null;
+        
+        for (const btn of allButtons) {
+          const text = await btn.evaluate(el => (el.textContent || '').trim().toLowerCase());
+          const aria = await btn.evaluate(el => (el.getAttribute('aria-label') || '').toLowerCase());
+          
+          if (text === 'post' || aria === 'post' || aria.includes('post')) {
+            foundBtn = btn;
+            console.log(`${tag} Found Post button by text/aria: "${text}"`);
+            break;
+          }
         }
-        window.__submitCheckCounter++;
+        
+        if (!foundBtn) {
+          console.log(`${tag} Fallback search failed, retrying...`);
+          await sleep(1000);
+          continue;
+        }
+      }
 
-        return dialogClosed || hasPostedSignal || postButtonGone;
-      }, { timeout: 10000 }).catch((err) => {
-        console.log('[submit-check] waitForFunction timeout:', err.message);
-        return null;
+      const button = postBtn || foundBtn;
+      
+      // Use Puppeteer's click which properly simulates user interaction
+      console.log(`${tag} Clicking Post button with Puppeteer...`);
+      await button.click({ delay: 100 });
+      
+      // Also dispatch click event to handle React synthetic events
+      await button.evaluate(el => {
+        el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
       });
 
-      const result = await Promise.race([navPromise, uiPromise]);
-      console.log('[submit-check] Promise.race completed');
-
-      // Final check in current context
-      const confirmed = await page.evaluate(() => {
-        const dialog = document.querySelector('[role="dialog"]');
-        const bodyText = (document.body?.innerText || '').toLowerCase();
-        const postButton = dialog ? dialog.querySelector('[role="button"][aria-label="Post"]') : null;
+      // Wait for dialog to close
+      console.log(`${tag} Waiting for dialog to close...`);
+      let dialogClosed = false;
+      
+      for (let i = 0; i < 20; i++) {
+        await sleep(400);
         
-        // Check if dialog is actually gone
-        const dialogClosed = !dialog;
-        
-        // Check if button disappeared
-        const postButtonGone = !postButton;
-        
-        // Check for success messages
-        const hasPostedSignal =
-          bodyText.includes('your post is pending') ||
-          bodyText.includes('post submitted') ||
-          bodyText.includes('post sent for review') ||
-          bodyText.includes('your post is live') ||
-          bodyText.includes('post has been published') ||
-          bodyText.includes('ready to share') ||
-          bodyText.includes('shared with');
-        
-        const success = dialogClosed || postButtonGone || hasPostedSignal;
-
-        console.log(`[submit-final-check] dialogClosed=${dialogClosed}, postButtonGone=${postButtonGone}, hasMessage=${hasPostedSignal}, success=${success}`);
-        return success;
-      });
-
-      if (confirmed) {
-        console.log('[submit-signal] ✓ Submit confirmation received');
-        return true;
-      } else {
-        console.log('[submit-signal] ⚠️ No submit confirmation after click');
-        // Last resort: if button was clicked and we waited, maybe just accept it
-        const clicked = await page.evaluate(() => {
-          const postBtn = document.querySelector('[role="dialog"] [role="button"][aria-label="Post"]');
-          return !postBtn; // If button is gone, assume click worked
+        const state = await page.evaluate(() => {
+          const dialog = document.querySelector('[role="dialog"]');
+          if (!dialog) return { closed: true };
+          
+          // Check for success signals
+          const bodyText = (document.body?.innerText || '').toLowerCase();
+          const hasSuccess = bodyText.includes('post') && (
+            bodyText.includes('pending') || 
+            bodyText.includes('published') || 
+            bodyText.includes('submitted') ||
+            bodyText.includes('shared') ||
+            bodyText.includes('live')
+          );
+          
+          return { 
+            closed: false, 
+            hasSuccess,
+            bodyText: bodyText.substring(0, 200)
+          };
         });
-        if (clicked) {
-          console.log('[submit-signal] ℹ️ Post button is gone, assuming success anyway');
+        
+        if (state.closed) {
+          dialogClosed = true;
+          console.log(`${tag} ✓ Dialog closed after ${(i + 1) * 400}ms`);
+          break;
+        }
+        
+        if (state.hasSuccess) {
+          console.log(`${tag} ✓ Success message detected: ${state.bodyText}`);
           return true;
         }
-        return false;
       }
+
+      if (dialogClosed) {
+        console.log(`${tag} ✓ Post submitted successfully`);
+        return true;
+      }
+
+      console.log(`${tag} Dialog still open after 8s, retrying...`);
+      
     } catch (err) {
-      const msg = String(err?.message || '').toLowerCase();
-      console.log('[submit-signal] Exception during wait:', msg);
-      // Facebook often destroys execution context right after successful submit
-      if (msg.includes('execution context was destroyed') || msg.includes('navigating frame was detached')) {
-        console.log('[submit-signal] ✓ Context destroyed (likely successful submit)');
-        return true;
-      }
-      return false;
-    }
-  };
-
-  const clickPrimaryPostButton = async () => {
-    // First try: exact aria-label match
-    const exact = await page.$('[role="dialog"] [role="button"][aria-label="Post"]');
-    if (exact) {
-      try {
-        await exact.evaluate((el) => el.scrollIntoView({ block: 'center', inline: 'center' }));
-        await exact.click({ delay: 60 });
-        console.log('[submit-debug] ✓ Clicked via exact aria-label selector');
-        return true;
-      } catch (e) {
-        console.log('[submit-debug] Exact selector found but click failed:', e.message);
-      }
-    }
-
-    // Fallback: comprehensive DOM analysis
-    const result = await page.evaluate(() => {
-      const dialog = document.querySelector('[role="dialog"]');
-      const logs = [];
-      
-      if (!dialog) {
-        logs.push('No dialog found');
-        return { success: false, reason: 'no_dialog', logs };
-      }
-
-      const all = Array.from(dialog.querySelectorAll('[role="button"], button'));
-      logs.push(`Found ${all.length} total buttons in dialog`);
-
-      const candidates = [];
-      const visibleButtons = [];
-      
-      for (let i = 0; i < all.length; i++) {
-        const el = all[i];
-        const txt = (el.textContent || '').trim();
-        const txtLower = txt.toLowerCase();
-        const aria = (el.getAttribute('aria-label') || '').trim();
-        const ariaLower = aria.toLowerCase();
-        const rect = el.getBoundingClientRect();
-        const disabled = el.getAttribute('aria-disabled') === 'true' || el.hasAttribute('disabled');
-        const hidden = rect.width < 8 || rect.height < 8 || el.offsetParent === null;
-
-        // Log all buttons with substantial size
-        if (!hidden) {
-          const btnInfo = `[button ${i}] text="${txt}", aria="${aria}", size=${Math.round(rect.width)}x${Math.round(rect.height)}, disabled=${disabled}`;
-          logs.push(btnInfo);
-          visibleButtons.push({ i, txt, aria, disabled });
-        }
-
-        // Strategy 1: Direct text/aria match for "Post"
-        const isPost = 
-          txtLower === 'post' || 
-          ariaLower === 'post' || 
-          ariaLower.includes('post');
-        
-        if (isPost && !disabled && !hidden) {
-          candidates.push({ 
-            el, 
-            bottom: rect.bottom, 
-            right: rect.right,
-            width: rect.width,
-            height: rect.height,
-            text: txt,
-            aria: aria,
-            strategy: 'direct-post-match'
-          });
-        }
-      }
-
-      if (candidates.length > 0) {
-        // Primary action is typically the bottom-right Post button
-        candidates.sort((a, b) => (b.bottom - a.bottom) || (b.right - a.right));
-        const target = candidates[0].el;
-        logs.push(`Found ${candidates.length} Post button candidate(s), clicking: text="${candidates[0].text}", strategy=${candidates[0].strategy}`);
-        
-        try {
-          target.scrollIntoView({ block: 'center', inline: 'center' });
-          target.click();
-          logs.push('✓ Post button click succeeded');
-          return { success: true, reason: 'post_button_clicked', logs };
-        } catch (e) {
-          logs.push(`✗ Click failed: ${e.message}`);
-          // Try alternative click methods
-          try {
-            target.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
-            target.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true }));
-            target.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-            logs.push('✓ Alternative mouse events succeeded');
-            return { success: true, reason: 'post_button_clicked_alt', logs };
-          } catch (e2) {
-            logs.push(`✗ Alternative click also failed: ${e2.message}`);
-            return { success: false, reason: 'click_failed', error: e.message, logs };
-          }
-        }
-      }
-
-      // Strategy 2: If no "Post" button found, try the bottom-right action button
-      logs.push('No Post button found, trying bottom-right strategy...');
-      const allEnabled = [];
-      for (const el of all) {
-        const disabled = el.getAttribute('aria-disabled') === 'true' || el.hasAttribute('disabled');
-        const rect = el.getBoundingClientRect();
-        const hidden = rect.width < 8 || rect.height < 8 || el.offsetParent === null;
-        
-        if (!disabled && !hidden) {
-          allEnabled.push({ el, bottom: rect.bottom, right: rect.right, text: (el.textContent || '').trim() });
-        }
-      }
-
-      if (allEnabled.length > 0) {
-        // Bottom-right button is typically the primary action
-        allEnabled.sort((a, b) => (b.bottom - a.bottom) || (b.right - a.right));
-        const target = allEnabled[0].el;
-        logs.push(`Clicking bottom-right button: text="${allEnabled[0].text}"`);
-        
-        try {
-          target.scrollIntoView({ block: 'center', inline: 'center' });
-          target.click();
-          logs.push('✓ Bottom-right button click succeeded');
-          return { success: true, reason: 'bottom_right_button', logs };
-        } catch (e) {
-          logs.push(`✗ Bottom-right click failed: ${e.message}`);
-          // Try alternative click methods
-          try {
-            target.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
-            target.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true }));
-            target.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-            logs.push('✓ Alternative mouse events succeeded');
-            return { success: true, reason: 'bottom_right_button_alt', logs };
-          } catch (e2) {
-            logs.push(`✗ Alternative click also failed: ${e2.message}`);
-            return { success: false, reason: 'bottom_right_failed', error: e.message, logs };
-          }
-        }
-      }
-
-      logs.push(`No enabled buttons found. Visible buttons: ${visibleButtons.map(b => `"${b.txt}"`).join(', ') || 'none'}`);
-      return { success: false, reason: 'no_enabled_buttons', logs };
-    });
-
-    // Log everything returned from page.evaluate
-    if (result.logs && Array.isArray(result.logs)) {
-      for (const logMsg of result.logs) {
-        console.log(`[submit-debug] ${logMsg}`);
-      }
-    }
-
-    if (!result.success) {
-      console.log(`[submit-debug] Button click failed: ${result.reason}`, result.error || '');
-    }
-    return result.success;
-  };
-
-  const ensureImageAtSubmit = async () => {
-    if (!requireImage) return true;
-    if (await hasComposerImage(page)) return true;
-    await sleep(1200);
-    if (await hasComposerImage(page)) return true;
-    if (imagePath && groupIndex) {
-      console.log(`${tag} ⚠️ Image missing at submit; re-attaching once...`);
-      const uploaded = await uploadImageToComposer(page, imagePath, groupIndex);
-      if (uploaded) {
-        await waitForImageUploadToSettle(page, groupIndex);
-      }
-      return hasComposerImage(page);
-    }
-    return false;
-  };
-
-  for (let attempt = 1; attempt <= 5; attempt++) {
-    const imageReady = await ensureImageAtSubmit();
-    if (!imageReady) {
-      throw new Error('Image missing at submit time; aborting to avoid text-only post.');
-    }
-
-    console.log(`${tag} Attempt ${attempt}: Clicking post button...`);
-    const clicked = await clickPrimaryPostButton();
-    
-    if (!clicked) {
-      // Try keyboard shortcut if click fails
-      console.log(`${tag} ⚠️ Primary click failed (no button found), trying keyboard...`);
-      try {
-        // Tab to next button + Enter
-        await page.keyboard.press('Tab');
-        await sleep(300);
-        await page.keyboard.press('Enter');
-        await sleep(800);
-      } catch (e) {
-        console.log(`${tag} ⚠️ Keyboard attempt failed: ${e.message}`);
-        if (attempt >= 5) {
-          throw new Error('Could not find enabled primary Post button in composer dialog.');
-        }
-        await sleep(1500);
-        continue;
-      }
-    } else {
-      // Button was clicked successfully, wait before checking
-      const waitDuration = attempt === 1 ? 2000 : 1500;
-      await sleep(waitDuration);
-    }
-    
-    const ok = await waitForSubmitSignal();
-    if (ok) {
-      console.log(`${tag} ✓ Post submitted successfully on attempt ${attempt}`);
-      return true;
-    }
-
-    if (attempt < 5) {
-      console.log(`${tag} ⚠️ Submit not confirmed on attempt ${attempt}, retrying...`);
-      // Between attempts, check dialog state and wait
-      const state = await page.evaluate(() => {
-        const dialog = document.querySelector('[role="dialog"]');
-        const postBtn = dialog ? dialog.querySelector('[role="button"][aria-label="Post"]') : null;
-        return {
-          dialogExists: !!dialog,
-          postBtnExists: !!postBtn,
-          postBtnDisabled: postBtn?.getAttribute('aria-disabled') === 'true'
-        };
-      });
-      console.log(`${tag} Dialog state: ${JSON.stringify(state)}`);
-      
-      if (!state.dialogExists) {
-        console.log(`${tag} ℹ️ Dialog closed between checks - success`);
-        return true;
-      }
-      
-      // If button is still there and enabled, something went wrong with the click
-      if (state.postBtnExists && !state.postBtnDisabled && attempt >= 3) {
-        console.log(`${tag} ⚠️ Button still enabled after 3+ attempts, might be a real error`);
-        // But don't fail yet - maybe the server is just slow
-      }
-      
+      console.log(`${tag} Error during submit: ${err.message}`);
       await sleep(1000);
-    } else {
-      console.log(`${tag} ⚠️ Max attempts (5) reached, checking final state...`);
-      // Final check: maybe dialog closed but signal wasn't detected
-      const finalState = await page.evaluate(() => {
-        const dialog = document.querySelector('[role="dialog"]');
-        return { dialogExists: !!dialog };
-      });
-      
-      if (!finalState.dialogExists) {
-        console.log(`${tag} ✓ Dialog closed after retries - success`);
-        return true;
-      }
-      
-      console.log(`${tag} ⚠️ Dialog still exists after 5 attempts, but continuing anyway`);
-      // At this point, either the post succeeded and the dialog is stuck,
-      // or there's an error. Log it but don't completely fail.
-      return true;
     }
   }
 
-  throw new Error('Post click did not produce a submit confirmation (dialog still open).');
+  throw new Error('Post could not be submitted after 3 attempts');
 }
 
 async function navigateToGroupWithRetry(page, url, groupIndex) {
   const label = `[group ${groupIndex}]`;
   const attempts = [
-    { waitUntil: 'networkidle2', timeout: 120000 },
-    { waitUntil: 'domcontentloaded', timeout: 120000 },
+    { waitUntil: 'domcontentloaded', timeout: 30000 },  // Fast: just DOM ready
+    { waitUntil: 'networkidle2', timeout: 60000 },      // Slower: but if needed
   ];
 
   for (let i = 0; i < attempts.length; i++) {

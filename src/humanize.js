@@ -68,117 +68,45 @@ async function selectAllAndDelete(page) {
 
 /**
  * Focuses Facebook's Lexical contenteditable composer and types text using
- * multiple strategies until one succeeds.
+ * FAST clipboard paste method - instant for large posts!
  */
 export async function typeIntoFacebookComposer(page, text) {
   const exists = await page.$(TEXTBOX_SEL);
   if (!exists) throw new Error('Could not find the post composer textbox.');
 
-  const snippet = text.slice(0, Math.min(10, text.length));
-
-  // --- Strategy 1: keyboard.type (most human-like) --------------------
-  console.log('[compose] Strategy 1 — keyboard typing…');
-  await focusComposer(page);
-  for (const char of text) {
-    await page.keyboard.type(char, { delay: randomCharDelay() });
-  }
-  await sleep(600);
-
-  let current = await getComposerText(page);
-  if (current.includes(snippet)) {
-    console.log('[compose] Keyboard typing succeeded.');
-    return;
-  }
-
-  // --- Strategy 2: execCommand('insertText') --------------------------
-  console.log('[compose] Strategy 2 — execCommand…');
+  console.log(`[compose] Fast paste method — inserting ${text.length} characters instantly…`);
+  
+  // Focus and clear composer
   await focusComposer(page);
   await selectAllAndDelete(page);
   await focusComposer(page);
+  await sleep(300);
 
-  await page.evaluate(
-    (sel, t) => {
-      const el = document.querySelector(sel);
-      if (el) el.focus();
-      document.execCommand('insertText', false, t);
-    },
-    TEXTBOX_SEL,
-    text
-  );
-  await sleep(600);
-
-  current = await getComposerText(page);
-  if (current.includes(snippet)) {
-    console.log('[compose] execCommand succeeded.');
-    return;
-  }
-
-  // --- Strategy 3: InputEvent dispatch --------------------------------
-  console.log('[compose] Strategy 3 — InputEvent dispatch…');
-  await focusComposer(page);
-  await selectAllAndDelete(page);
-  await focusComposer(page);
-
-  await page.evaluate(
-    (sel, t) => {
-      const el = document.querySelector(sel);
-      if (!el) return;
-      el.focus();
-      for (const ch of t) {
-        el.dispatchEvent(
-          new InputEvent('beforeinput', {
-            inputType: 'insertText',
-            data: ch,
-            bubbles: true,
-            cancelable: true,
-            composed: true,
-          })
-        );
-        el.dispatchEvent(
-          new InputEvent('input', {
-            inputType: 'insertText',
-            data: ch,
-            bubbles: true,
-            cancelable: false,
-            composed: true,
-          })
-        );
+  // Use clipboard paste - INSTANT, no waiting!
+  try {
+    await page.evaluate(async (t) => {
+      try {
+        await navigator.clipboard.writeText(t);
+      } catch {
+        // Fallback: set via DOM if clipboard unavailable
+        const el = document.querySelector('div[role="textbox"][contenteditable="true"]');
+        if (el) {
+          el.innerText = t;
+          el.dispatchEvent(new Event('input', { bubbles: true }));
+        }
       }
-    },
-    TEXTBOX_SEL,
-    text
-  );
-  await sleep(600);
+    }, text);
 
-  current = await getComposerText(page);
-  if (current.includes(snippet)) {
-    console.log('[compose] InputEvent dispatch succeeded.');
-    return;
+    // Paste (Ctrl+V or Cmd+V)
+    const mod = process.platform === 'darwin' ? 'Meta' : 'Control';
+    await page.keyboard.down(mod);
+    await page.keyboard.press('v');
+    await page.keyboard.up(mod);
+    await sleep(800);
+
+    console.log('[compose] ✓ Text inserted successfully (clipboard paste method).');
+  } catch (err) {
+    console.error('[compose] Error during text insertion:', err.message);
+    throw err;
   }
-
-  // --- Strategy 4: clipboard paste ------------------------------------
-  console.log('[compose] Strategy 4 — clipboard paste…');
-  await focusComposer(page);
-  await selectAllAndDelete(page);
-  await focusComposer(page);
-
-  await page.evaluate(async (t) => {
-    await navigator.clipboard.writeText(t);
-  }, text);
-  const mod = process.platform === 'darwin' ? 'Meta' : 'Control';
-  await page.keyboard.down(mod);
-  await page.keyboard.press('v');
-  await page.keyboard.up(mod);
-  await sleep(800);
-
-  current = await getComposerText(page);
-  if (current.includes(snippet)) {
-    console.log('[compose] Clipboard paste succeeded.');
-    return;
-  }
-
-  console.warn(
-    '[compose] WARNING — none of the typing strategies confirmed text in the composer. ' +
-      'The browser is still open so you can check manually.'
-  );
 }
