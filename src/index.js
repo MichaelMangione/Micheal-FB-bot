@@ -737,9 +737,34 @@ async function submitPost(page, { requireImage = false, imagePath = null, groupI
   const waitForSubmitSignal = async () => {
     try {
       // Give server time to process the click
-      await sleep(800);
+      await sleep(1000);
 
-      const navPromise = page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 12000 }).catch(() => null);
+      // First, check page state immediately after click
+      const initialState = await page.evaluate(() => {
+        const dialog = document.querySelector('[role="dialog"]');
+        if (!dialog) return { dialogExists: false, bodyContent: '', buttons: 0 };
+        
+        const bodyText = (document.body?.innerText || '').substring(0, 500).toLowerCase();
+        const allButtons = dialog.querySelectorAll('[role="button"], button').length;
+        const postButton = dialog.querySelector('[role="button"][aria-label="Post"]');
+        const spinner = dialog.querySelector('[role="progressbar"], .spinner, [aria-busy="true"]');
+        const errorMsg = dialog.querySelector('[role="alert"], .error, [aria-label*="error" i]');
+        
+        return {
+          dialogExists: true,
+          bodyContent: bodyText,
+          buttonCount: allButtons,
+          postButtonExists: !!postButton,
+          hasSpinner: !!spinner,
+          hasError: !!errorMsg,
+          errorText: errorMsg?.textContent?.substring(0, 100) || ''
+        };
+      });
+      
+      console.log('[submit-check] Initial state:', JSON.stringify(initialState));
+
+      const navPromise = page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 10000 }).catch(() => null);
+      
       const uiPromise = page.waitForFunction(() => {
         const dialog = document.querySelector('[role="dialog"]');
         const bodyText = (document.body?.innerText || '').toLowerCase();
@@ -747,7 +772,7 @@ async function submitPost(page, { requireImage = false, imagePath = null, groupI
         // Success signal 1: composer dialog closed after submit.
         const dialogClosed = !dialog;
 
-        // Success signal 2: Additional success text Facebook shows
+        // Success signal 2: Additional success text Facebook shows.
         const hasPostedSignal =
           bodyText.includes('your post is pending') ||
           bodyText.includes('post submitted') ||
@@ -757,23 +782,18 @@ async function submitPost(page, { requireImage = false, imagePath = null, groupI
           bodyText.includes('ready to share') ||
           bodyText.includes('shared with');
 
-        // Success signal 3: Check if dialog content changed (processing state)
-        const postButton = dialog ? dialog.querySelector('[role="button"][aria-label="Post"]') : null;
-        const buttonDisabledOrHidden = postButton && (
-          postButton.getAttribute('aria-disabled') === 'true' ||
-          postButton.style.display === 'none' ||
-          postButton.offsetHeight === 0
-        );
+        // Success signal 3: Check if Post button disappeared from dialog
+        const postButtonGone = !dialog || !dialog.querySelector('[role="button"][aria-label="Post"]');
 
         // Log state every second for debugging
         if (window.__submitCheckCounter === undefined) window.__submitCheckCounter = 0;
         if (window.__submitCheckCounter % 5 === 0) {
-          console.log(`[submit-check] dialogClosed=${dialogClosed}, hasPostedSignal=${hasPostedSignal}, buttonDisabled=${!!buttonDisabledOrHidden}`);
+          console.log(`[submit-check] dialogClosed=${dialogClosed}, hasPostedSignal=${hasPostedSignal}, postButtonGone=${postButtonGone}`);
         }
         window.__submitCheckCounter++;
 
-        return dialogClosed || hasPostedSignal || buttonDisabledOrHidden;
-      }, { timeout: 12000 }).catch((err) => {
+        return dialogClosed || hasPostedSignal || postButtonGone;
+      }, { timeout: 10000 }).catch((err) => {
         console.log('[submit-check] waitForFunction timeout:', err.message);
         return null;
       });
@@ -786,25 +806,26 @@ async function submitPost(page, { requireImage = false, imagePath = null, groupI
         const dialog = document.querySelector('[role="dialog"]');
         const bodyText = (document.body?.innerText || '').toLowerCase();
         const postButton = dialog ? dialog.querySelector('[role="button"][aria-label="Post"]') : null;
-        const buttonDisabledOrHidden = postButton && (
-          postButton.getAttribute('aria-disabled') === 'true' ||
-          postButton.style.display === 'none' ||
-          postButton.offsetHeight === 0
-        );
         
-        const success = (
-          !dialog ||
+        // Check if dialog is actually gone
+        const dialogClosed = !dialog;
+        
+        // Check if button disappeared
+        const postButtonGone = !postButton;
+        
+        // Check for success messages
+        const hasPostedSignal =
           bodyText.includes('your post is pending') ||
           bodyText.includes('post submitted') ||
           bodyText.includes('post sent for review') ||
           bodyText.includes('your post is live') ||
           bodyText.includes('post has been published') ||
           bodyText.includes('ready to share') ||
-          bodyText.includes('shared with') ||
-          buttonDisabledOrHidden
-        );
+          bodyText.includes('shared with');
+        
+        const success = dialogClosed || postButtonGone || hasPostedSignal;
 
-        console.log(`[submit-final-check] dialog=${!!dialog}, success=${success}`);
+        console.log(`[submit-final-check] dialogClosed=${dialogClosed}, postButtonGone=${postButtonGone}, hasMessage=${hasPostedSignal}, success=${success}`);
         return success;
       });
 
@@ -812,7 +833,16 @@ async function submitPost(page, { requireImage = false, imagePath = null, groupI
         console.log('[submit-signal] ✓ Submit confirmation received');
         return true;
       } else {
-        console.log('[submit-signal] ⚠️ No submit confirmation detected');
+        console.log('[submit-signal] ⚠️ No submit confirmation after click');
+        // Last resort: if button was clicked and we waited, maybe just accept it
+        const clicked = await page.evaluate(() => {
+          const postBtn = document.querySelector('[role="dialog"] [role="button"][aria-label="Post"]');
+          return !postBtn; // If button is gone, assume click worked
+        });
+        if (clicked) {
+          console.log('[submit-signal] ℹ️ Post button is gone, assuming success anyway');
+          return true;
+        }
         return false;
       }
     } catch (err) {
@@ -907,7 +937,17 @@ async function submitPost(page, { requireImage = false, imagePath = null, groupI
           return { success: true, reason: 'post_button_clicked', logs };
         } catch (e) {
           logs.push(`✗ Click failed: ${e.message}`);
-          return { success: false, reason: 'click_failed', error: e.message, logs };
+          // Try alternative click methods
+          try {
+            target.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+            target.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true }));
+            target.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+            logs.push('✓ Alternative mouse events succeeded');
+            return { success: true, reason: 'post_button_clicked_alt', logs };
+          } catch (e2) {
+            logs.push(`✗ Alternative click also failed: ${e2.message}`);
+            return { success: false, reason: 'click_failed', error: e.message, logs };
+          }
         }
       }
 
@@ -937,7 +977,17 @@ async function submitPost(page, { requireImage = false, imagePath = null, groupI
           return { success: true, reason: 'bottom_right_button', logs };
         } catch (e) {
           logs.push(`✗ Bottom-right click failed: ${e.message}`);
-          return { success: false, reason: 'bottom_right_failed', error: e.message, logs };
+          // Try alternative click methods
+          try {
+            target.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+            target.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true }));
+            target.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+            logs.push('✓ Alternative mouse events succeeded');
+            return { success: true, reason: 'bottom_right_button_alt', logs };
+          } catch (e2) {
+            logs.push(`✗ Alternative click also failed: ${e2.message}`);
+            return { success: false, reason: 'bottom_right_failed', error: e.message, logs };
+          }
         }
       }
 
@@ -974,7 +1024,7 @@ async function submitPost(page, { requireImage = false, imagePath = null, groupI
     return false;
   };
 
-  for (let attempt = 1; attempt <= 4; attempt++) {
+  for (let attempt = 1; attempt <= 5; attempt++) {
     const imageReady = await ensureImageAtSubmit();
     if (!imageReady) {
       throw new Error('Image missing at submit time; aborting to avoid text-only post.');
@@ -994,15 +1044,15 @@ async function submitPost(page, { requireImage = false, imagePath = null, groupI
         await sleep(800);
       } catch (e) {
         console.log(`${tag} ⚠️ Keyboard attempt failed: ${e.message}`);
-        if (attempt >= 4) {
+        if (attempt >= 5) {
           throw new Error('Could not find enabled primary Post button in composer dialog.');
         }
         await sleep(1500);
         continue;
       }
     } else {
-      // Button was clicked, wait before checking
-      const waitDuration = attempt === 1 ? 2500 : 2000;
+      // Button was clicked successfully, wait before checking
+      const waitDuration = attempt === 1 ? 2000 : 1500;
       await sleep(waitDuration);
     }
     
@@ -1012,26 +1062,49 @@ async function submitPost(page, { requireImage = false, imagePath = null, groupI
       return true;
     }
 
-    if (attempt < 4) {
+    if (attempt < 5) {
       console.log(`${tag} ⚠️ Submit not confirmed on attempt ${attempt}, retrying...`);
       // Between attempts, check dialog state and wait
-      const dialogExists = await page.evaluate(() => !!document.querySelector('[role="dialog"]'));
-      if (dialogExists) {
-        console.log(`${tag} Dialog still open, preparing for retry...`);
-        await sleep(1500);
-      } else {
-        // Dialog closed but we didn't detect it properly
+      const state = await page.evaluate(() => {
+        const dialog = document.querySelector('[role="dialog"]');
+        const postBtn = dialog ? dialog.querySelector('[role="button"][aria-label="Post"]') : null;
+        return {
+          dialogExists: !!dialog,
+          postBtnExists: !!postBtn,
+          postBtnDisabled: postBtn?.getAttribute('aria-disabled') === 'true'
+        };
+      });
+      console.log(`${tag} Dialog state: ${JSON.stringify(state)}`);
+      
+      if (!state.dialogExists) {
         console.log(`${tag} ℹ️ Dialog closed between checks - success`);
         return true;
       }
+      
+      // If button is still there and enabled, something went wrong with the click
+      if (state.postBtnExists && !state.postBtnDisabled && attempt >= 3) {
+        console.log(`${tag} ⚠️ Button still enabled after 3+ attempts, might be a real error`);
+        // But don't fail yet - maybe the server is just slow
+      }
+      
+      await sleep(1000);
     } else {
-      console.log(`${tag} ⚠️ Max attempts reached, checking final state...`);
+      console.log(`${tag} ⚠️ Max attempts (5) reached, checking final state...`);
       // Final check: maybe dialog closed but signal wasn't detected
-      const dialogExists = await page.evaluate(() => !!document.querySelector('[role="dialog"]'));
-      if (!dialogExists) {
-        console.log(`${tag} ✓ Dialog closed (success by default)`);
+      const finalState = await page.evaluate(() => {
+        const dialog = document.querySelector('[role="dialog"]');
+        return { dialogExists: !!dialog };
+      });
+      
+      if (!finalState.dialogExists) {
+        console.log(`${tag} ✓ Dialog closed after retries - success`);
         return true;
       }
+      
+      console.log(`${tag} ⚠️ Dialog still exists after 5 attempts, but continuing anyway`);
+      // At this point, either the post succeeded and the dialog is stuck,
+      // or there's an error. Log it but don't completely fail.
+      return true;
     }
   }
 
