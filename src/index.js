@@ -751,7 +751,8 @@ async function submitPost(page, { requireImage = false, imagePath = null, groupI
           bodyText.includes('post sent for review') ||
           bodyText.includes('your post is live') ||
           bodyText.includes('post has been published') ||
-          bodyText.includes('ready to share');
+          bodyText.includes('ready to share') ||
+          bodyText.includes('shared with');
 
         // Check if dialog content changed (indicates server processing or transition)
         const postButton = dialog ? dialog.querySelector('[role="button"][aria-label="Post"]') : null;
@@ -784,6 +785,7 @@ async function submitPost(page, { requireImage = false, imagePath = null, groupI
           bodyText.includes('your post is live') ||
           bodyText.includes('post has been published') ||
           bodyText.includes('ready to share') ||
+          bodyText.includes('shared with') ||
           buttonDisabledOrHidden
         );
       });
@@ -816,10 +818,19 @@ async function submitPost(page, { requireImage = false, imagePath = null, groupI
 
       const all = Array.from(dialog.querySelectorAll('[role="button"], button'));
       const candidates = [];
+      
       for (const el of all) {
         const txt = (el.textContent || '').trim().toLowerCase();
         const aria = (el.getAttribute('aria-label') || '').trim().toLowerCase();
-        const isPost = txt === 'post' || aria === 'post' || aria.includes('post');
+        
+        // Match Post button more flexibly
+        const isPost = 
+          txt === 'post' || 
+          aria === 'post' || 
+          aria.includes('post') ||
+          txt.startsWith('post') ||
+          (txt.length <= 20 && txt.includes('post')); // Short text containing "post"
+        
         if (!isPost) continue;
 
         const disabled = el.getAttribute('aria-disabled') === 'true' || el.hasAttribute('disabled');
@@ -828,14 +839,36 @@ async function submitPost(page, { requireImage = false, imagePath = null, groupI
         const rect = el.getBoundingClientRect();
         if (rect.width < 8 || rect.height < 8) continue;
 
-        candidates.push({ el, bottom: rect.bottom, right: rect.right });
+        candidates.push({ 
+          el, 
+          bottom: rect.bottom, 
+          right: rect.right,
+          width: rect.width,
+          height: rect.height,
+          text: txt,
+          aria: aria
+        });
       }
 
-      if (!candidates.length) return false;
+      if (!candidates.length) {
+        // Debug: log all buttons if Post button not found
+        console.log('[submit-debug] No Post button found. All buttons in dialog:');
+        for (const el of all.slice(0, 15)) {
+          const txt = (el.textContent || '').trim().toLowerCase();
+          const aria = (el.getAttribute('aria-label') || '').trim().toLowerCase();
+          const rect = el.getBoundingClientRect();
+          if (rect.width > 8 && rect.height > 8) {
+            console.log(`  - text="${txt}", aria="${aria}", size=${rect.width}x${rect.height}`);
+          }
+        }
+        return false;
+      }
 
       // Primary action is typically the bottom-right Post button in the dialog.
       candidates.sort((a, b) => (b.bottom - a.bottom) || (b.right - a.right));
       const target = candidates[0].el;
+
+      console.log(`[submit-debug] Clicking Post button: text="${candidates[0].text}", size=${candidates[0].width}x${candidates[0].height}`);
 
       // Prefer native click for React handlers; event-dispatch can be ignored.
       try {
@@ -865,7 +898,7 @@ async function submitPost(page, { requireImage = false, imagePath = null, groupI
     return false;
   };
 
-  for (let attempt = 1; attempt <= 2; attempt++) {
+  for (let attempt = 1; attempt <= 3; attempt++) {
     const imageReady = await ensureImageAtSubmit();
     if (!imageReady) {
       throw new Error('Image missing at submit time; aborting to avoid text-only post.');
@@ -873,15 +906,37 @@ async function submitPost(page, { requireImage = false, imagePath = null, groupI
 
     const clicked = await clickPrimaryPostButton();
     if (!clicked) {
-      throw new Error('Could not find enabled primary Post button in composer dialog.');
+      // Try keyboard shortcut if click fails
+      console.log(`${tag} ⚠️ Primary click failed, trying keyboard shortcuts...`);
+      try {
+        await page.keyboard.press('Enter');
+        await sleep(500);
+      } catch (e) {
+        throw new Error('Could not find enabled primary Post button in composer dialog.');
+      }
     }
 
+    // Wait longer for response on first attempt, shorter on retries
+    const waitDuration = attempt === 1 ? 3000 : 2000;
+    await sleep(waitDuration);
+    
     const ok = await waitForSubmitSignal();
-    if (ok) return true;
+    if (ok) {
+      console.log(`${tag} ✓ Post submitted successfully on attempt ${attempt}`);
+      return true;
+    }
 
-    if (attempt < 2) {
-      console.log(`${tag} ⚠️ Submit not confirmed on first click, retrying...`);
-      await sleep(1200);
+    if (attempt < 3) {
+      console.log(`${tag} ⚠️ Submit not confirmed on attempt ${attempt}, retrying...`);
+      // Between attempts, check if dialog still exists and try clicking again
+      const dialogExists = await page.evaluate(() => !!document.querySelector('[role="dialog"]'));
+      if (dialogExists) {
+        await sleep(1000);
+      } else {
+        // Dialog might have closed but we didn't detect it properly - might still be a success
+        console.log(`${tag} ℹ️ Dialog closed between checks`);
+        return true;
+      }
     }
   }
 
