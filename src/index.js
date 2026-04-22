@@ -844,15 +844,18 @@ async function submitPost(page, { requireImage = false, imagePath = null, groupI
     // Fallback: comprehensive DOM analysis
     const result = await page.evaluate(() => {
       const dialog = document.querySelector('[role="dialog"]');
+      const logs = [];
+      
       if (!dialog) {
-        console.log('[submit-debug] No dialog found');
-        return { success: false, reason: 'no_dialog' };
+        logs.push('No dialog found');
+        return { success: false, reason: 'no_dialog', logs };
       }
 
       const all = Array.from(dialog.querySelectorAll('[role="button"], button'));
-      console.log(`[submit-debug] Found ${all.length} total buttons in dialog`);
+      logs.push(`Found ${all.length} total buttons in dialog`);
 
       const candidates = [];
+      const visibleButtons = [];
       
       for (let i = 0; i < all.length; i++) {
         const el = all[i];
@@ -866,7 +869,9 @@ async function submitPost(page, { requireImage = false, imagePath = null, groupI
 
         // Log all buttons with substantial size
         if (!hidden) {
-          console.log(`[button ${i}] text="${txt}", aria="${aria}", size=${Math.round(rect.width)}x${Math.round(rect.height)}, disabled=${disabled}`);
+          const btnInfo = `[button ${i}] text="${txt}", aria="${aria}", size=${Math.round(rect.width)}x${Math.round(rect.height)}, disabled=${disabled}`;
+          logs.push(btnInfo);
+          visibleButtons.push({ i, txt, aria, disabled });
         }
 
         // Strategy 1: Direct text/aria match for "Post"
@@ -893,20 +898,21 @@ async function submitPost(page, { requireImage = false, imagePath = null, groupI
         // Primary action is typically the bottom-right Post button
         candidates.sort((a, b) => (b.bottom - a.bottom) || (b.right - a.right));
         const target = candidates[0].el;
-        console.log(`[submit-debug] Found ${candidates.length} Post button candidate(s), clicking: text="${candidates[0].text}", strategy=${candidates[0].strategy}`);
+        logs.push(`Found ${candidates.length} Post button candidate(s), clicking: text="${candidates[0].text}", strategy=${candidates[0].strategy}`);
         
         try {
           target.scrollIntoView({ block: 'center', inline: 'center' });
           target.click();
-          return { success: true, reason: 'post_button_clicked' };
+          logs.push('✓ Post button click succeeded');
+          return { success: true, reason: 'post_button_clicked', logs };
         } catch (e) {
-          console.log('[submit-debug] Click failed:', e.message);
-          return { success: false, reason: 'click_failed', error: e.message };
+          logs.push(`✗ Click failed: ${e.message}`);
+          return { success: false, reason: 'click_failed', error: e.message, logs };
         }
       }
 
       // Strategy 2: If no "Post" button found, try the bottom-right action button
-      console.log('[submit-debug] No Post button found, trying bottom-right strategy...');
+      logs.push('No Post button found, trying bottom-right strategy...');
       const allEnabled = [];
       for (const el of all) {
         const disabled = el.getAttribute('aria-disabled') === 'true' || el.hasAttribute('disabled');
@@ -922,20 +928,29 @@ async function submitPost(page, { requireImage = false, imagePath = null, groupI
         // Bottom-right button is typically the primary action
         allEnabled.sort((a, b) => (b.bottom - a.bottom) || (b.right - a.right));
         const target = allEnabled[0].el;
-        console.log(`[submit-debug] Clicking bottom-right button: text="${allEnabled[0].text}"`);
+        logs.push(`Clicking bottom-right button: text="${allEnabled[0].text}"`);
         
         try {
           target.scrollIntoView({ block: 'center', inline: 'center' });
           target.click();
-          return { success: true, reason: 'bottom_right_button' };
+          logs.push('✓ Bottom-right button click succeeded');
+          return { success: true, reason: 'bottom_right_button', logs };
         } catch (e) {
-          console.log('[submit-debug] Bottom-right click failed:', e.message);
-          return { success: false, reason: 'bottom_right_failed', error: e.message };
+          logs.push(`✗ Bottom-right click failed: ${e.message}`);
+          return { success: false, reason: 'bottom_right_failed', error: e.message, logs };
         }
       }
 
-      return { success: false, reason: 'no_enabled_buttons' };
+      logs.push(`No enabled buttons found. Visible buttons: ${visibleButtons.map(b => `"${b.txt}"`).join(', ') || 'none'}`);
+      return { success: false, reason: 'no_enabled_buttons', logs };
     });
+
+    // Log everything returned from page.evaluate
+    if (result.logs && Array.isArray(result.logs)) {
+      for (const logMsg of result.logs) {
+        console.log(`[submit-debug] ${logMsg}`);
+      }
+    }
 
     if (!result.success) {
       console.log(`[submit-debug] Button click failed: ${result.reason}`, result.error || '');
@@ -1183,6 +1198,15 @@ async function main() {
         try {
           groupPage = await browser.newPage();
           await groupPage.setUserAgent(USER_AGENT);
+
+          // Forward browser console logs for debugging
+          groupPage.on('console', (msg) => {
+            const location = msg.location();
+            const prefix = location ? ` [${location.url}:${location.lineNumber}]` : '';
+            if (msg.text().includes('[submit-') || msg.text().includes('[button ') || msg.text().includes('[compose')) {
+              console.log(`[browser-console]${prefix} ${msg.text()}`);
+            }
+          });
 
           const stored = await loadSessionFromDisk();
           if (stored?.length) {
