@@ -472,7 +472,8 @@ async function ensureComposerHasImage(page, imagePath, groupIndex) {
   const retryOk = await uploadImageToComposer(page, imagePath, groupIndex);
   await sleep(1200);
   if (!retryOk || !(await hasComposerImage(page))) {
-    throw new Error('Image not detected in composer after retry; aborting submit to avoid text-only post.');
+    console.log(`${tag} ⚠️ Image upload failed - will post TEXT ONLY instead`);
+    return false;  // CHANGE: Return false instead of throwing - let text post proceed!
   }
   return true;
 }
@@ -697,44 +698,27 @@ async function submitPost(page, { requireImage = false, imagePath = null, groupI
     }
 
     try {
-      // Find the Post button using Puppeteer's high-level method
-      const postButtonSelector = '[role="dialog"] [role="button"][aria-label="Post"]';
-      const postBtn = await page.$(postButtonSelector);
-      
-      if (!postBtn) {
-        console.log(`${tag} Post button not found, trying fallback selector...`);
-        // Try to find by text content as fallback
-        const allButtons = await page.$$('[role="dialog"] [role="button"]');
-        let foundBtn = null;
-        
-        for (const btn of allButtons) {
-          const text = await btn.evaluate(el => (el.textContent || '').trim().toLowerCase());
-          const aria = await btn.evaluate(el => (el.getAttribute('aria-label') || '').toLowerCase());
-          
-          if (text === 'post' || aria === 'post' || aria.includes('post')) {
-            foundBtn = btn;
-            console.log(`${tag} Found Post button by text/aria: "${text}"`);
-            break;
-          }
+      // FIRST: Try direct Post button click via evaluate (simplest)
+      const posted = await page.evaluate(() => {
+        const postBtn = Array.from(document.querySelectorAll('[role="dialog"] [role="button"]')).find(btn => {
+          const aria = (btn.getAttribute('aria-label') || '').toLowerCase();
+          const text = (btn.textContent || '').toLowerCase().trim();
+          return aria === 'post' || text === 'post';
+        });
+        if (postBtn) {
+          postBtn.click();
+          return true;
         }
-        
-        if (!foundBtn) {
-          console.log(`${tag} Fallback search failed, retrying...`);
-          await sleep(1000);
-          continue;
-        }
-      }
-
-      const button = postBtn || foundBtn;
-      
-      // Use Puppeteer's click which properly simulates user interaction
-      console.log(`${tag} Clicking Post button with Puppeteer...`);
-      await button.click({ delay: 100 });
-      
-      // Also dispatch click event to handle React synthetic events
-      await button.evaluate(el => {
-        el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+        return false;
       });
+
+      if (posted) {
+        console.log(`${tag} ✓ Post button clicked via evaluate`);
+      } else {
+        console.log(`${tag} Post button not found in dialog`);
+        await sleep(1000);
+        continue;  // retry
+      }
 
       // Wait for dialog to close
       console.log(`${tag} Waiting for dialog to close...`);
@@ -1055,12 +1039,12 @@ async function main() {
             const uploaded = await uploadImageToComposer(groupPage, selectedImagePath, i + 1);
             endTimer(`Group ${i + 1} image upload`);
             if (!uploaded) {
-              console.warn(`[group ${i + 1}] ⚠️ Initial image upload did not confirm preview`);
-              await ensureComposerHasImage(groupPage, selectedImagePath, i + 1);
+              console.warn(`[group ${i + 1}] ⚠️ Image upload failed - will post TEXT ONLY`);
+              // Don't retry - just continue with text-only post
             } else {
-              console.log(`[group ${i + 1}] ✅ Image upload accepted; proceeding without early re-upload`);
+              console.log(`[group ${i + 1}] ✅ Image upload accepted`);
             }
-            await sleep(2000);
+            await sleep(1000);
           }
 
           if (selectedImagePath) {
@@ -1078,7 +1062,7 @@ async function main() {
             console.log(`[group ${i + 1}] Submitting post...`);
             startTimer(`Group ${i + 1} submit`);
             await submitPost(groupPage, {
-              requireImage: !!selectedImagePath,
+              requireImage: false,  // Allow text-only posts if image fails
               imagePath: selectedImagePath,
               groupIndex: i + 1,
             });
