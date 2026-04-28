@@ -97,16 +97,10 @@ async function runDaemon() {
   let consecutiveErrors = 0;
   const maxErrors = 3;
 
-  // Main daemon loop
+  // Main daemon loop - runs indefinitely, auto-cycling through posts
   while (true) {
     const state = loadPostingState();
     const nextPost = getNextPost(posts, state);
-
-    if (!nextPost) {
-      console.log('\n[daemon] ✅ All posts completed!');
-      console.log(`[daemon] Total posts history: ${state.completedPostIds.join(', ')}`);
-      break;
-    }
 
     try {
       // Run the bot for one post

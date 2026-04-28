@@ -168,10 +168,31 @@ export function updateStateAfterPost(state, postId) {
 }
 
 /**
+ * Reset the posting cycle - clears completed posts to start from beginning
+ */
+export function resetPostingCycle(state) {
+  state.completedPostIds = [];
+  state.cycleCount = (state.cycleCount || 0) + 1;
+  savePostingState(state);
+  console.log(`[scheduler] 🔄 Cycle #${state.cycleCount} started - resetting all posts`);
+}
+
+/**
  * Get next post to post (excluding already completed ones)
+ * Auto-cycles back to first post when all are completed
  */
 export function getNextPost(posts, state) {
   const completedIds = state?.completedPostIds || [];
-  const nextPost = posts.find((p) => !completedIds.includes(p.id));
+  
+  // Find next unposted post
+  let nextPost = posts.find((p) => !completedIds.includes(p.id));
+  
+  // If all posts completed, reset cycle and get first post
+  if (!nextPost && posts.length > 0) {
+    console.log('\n[scheduler] 🔄 All posts completed! Starting new cycle...');
+    resetPostingCycle(state);
+    nextPost = posts[0];
+  }
+  
   return nextPost || null;
 }
