@@ -820,10 +820,10 @@ async function main() {
             try {
               selectedImagePath = await pickImageByPostId(POST_IMAGE_DIR, post.id);
               if (!selectedImagePath) {
-                console.log(`[group ${i + 1}] No image available for this post`);
+                throw new Error(`No image available for this post (image directory configured at ${POST_IMAGE_DIR}). Post requires both text and image.`);
               }
             } catch (imgErr) {
-              console.warn(`[group ${i + 1}] ⚠️ Image pick error: ${imgErr.message}`);
+              throw new Error(`Image selection failed: ${imgErr.message}`);
             }
           }
 

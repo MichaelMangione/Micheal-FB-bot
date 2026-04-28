@@ -350,31 +350,43 @@ async function openGroupComposer(page) {
     const alreadyOpen = await page.$('[role="dialog"] [role="textbox"], [role="dialog"] div[contenteditable="true"]');
     if (alreadyOpen) return;
 
-    // Click the composer with simple, fast selector
+    // Click the composer with simple, fast selector - MORE AGGRESSIVE
     const clicked = await page.evaluate(() => {
       // Try the most common Facebook selectors first
       const selectors = [
         () => document.querySelector('[data-testid="status_composer_container"]')?.parentElement?.querySelector('[role="button"]'),
+        () => document.querySelector('[data-testid="status_composer_container"]')?.querySelector('[role="button"]'),
         () => Array.from(document.querySelectorAll('[role="button"]')).find(b => {
           const aria = (b.getAttribute('aria-label') || '').toLowerCase();
-          return aria.includes('write') || aria.includes('create') || aria.includes('share');
+          return aria.includes('write') || aria.includes('create') || aria.includes('share') || aria.includes('post');
         }),
-        () => Array.from(document.querySelectorAll('div[role="button"]')).find(b => {
+        // AGGRESSIVE: Just find ANY large button in the main feed area
+        () => Array.from(document.querySelectorAll('[role="main"] [role="button"], [role="region"] [role="button"]')).find(b => {
           const rect = b.getBoundingClientRect();
-          const looksLarge = rect.width > 100 && rect.height > 30;
-          const hasText = b.textContent.length > 5;
-          return looksLarge && hasText;
+          const looksLarge = rect.width > 80 && rect.height > 25;
+          return looksLarge && rect.top < window.innerHeight * 0.4;  // In upper half of page
+        }),
+        // FALLBACK: ANY button with at least 50px width
+        () => Array.from(document.querySelectorAll('[role="button"]')).find(b => {
+          const rect = b.getBoundingClientRect();
+          return rect.width > 50 && rect.height > 20 && b.textContent.length > 2;
         })
       ];
 
       for (const selector of selectors) {
         try {
           const el = selector();
-          if (el && el.getBoundingClientRect().height > 20) {
-            el.click();
-            return true;
+          if (el) {
+            const rect = el.getBoundingClientRect();
+            if (rect.height > 15) {
+              console.log('[composer-debug] Clicking button:', el.textContent.substring(0, 30), el.getAttribute('aria-label'));
+              el.click();
+              return true;
+            }
           }
-        } catch {}
+        } catch (e) {
+          // Ignore selector errors
+        }
       }
       return false;
     });
@@ -472,8 +484,7 @@ async function ensureComposerHasImage(page, imagePath, groupIndex) {
   const retryOk = await uploadImageToComposer(page, imagePath, groupIndex);
   await sleep(1200);
   if (!retryOk || !(await hasComposerImage(page))) {
-    console.log(`${tag} ⚠️ Image upload failed - will post TEXT ONLY instead`);
-    return false;  // CHANGE: Return false instead of throwing - let text post proceed!
+    throw new Error('Image upload failed at submit time; post aborted (requires both text and image).');
   }
   return true;
 }
@@ -1016,10 +1027,10 @@ async function main() {
             try {
               selectedImagePath = await pickImageByPostId(POST_IMAGE_DIR, post.id);
               if (!selectedImagePath) {
-                console.log(`[group ${i + 1}] No image available for this post`);
+                throw new Error(`No image available for this post (image directory configured at ${POST_IMAGE_DIR}). Post requires both text and image.`);
               }
             } catch (imgErr) {
-              console.warn(`[group ${i + 1}] ⚠️ Image pick error: ${imgErr.message}`);
+              throw new Error(`Image selection failed: ${imgErr.message}`);
             }
           }
 
@@ -1039,8 +1050,8 @@ async function main() {
             const uploaded = await uploadImageToComposer(groupPage, selectedImagePath, i + 1);
             endTimer(`Group ${i + 1} image upload`);
             if (!uploaded) {
-              console.warn(`[group ${i + 1}] ⚠️ Image upload failed - will post TEXT ONLY`);
-              // Don't retry - just continue with text-only post
+              console.warn(`[group ${i + 1}] ⚠️ Initial image upload did not confirm preview`);
+              await ensureComposerHasImage(groupPage, selectedImagePath, i + 1);
             } else {
               console.log(`[group ${i + 1}] ✅ Image upload accepted`);
             }
@@ -1058,11 +1069,12 @@ async function main() {
           } else {
             if (selectedImagePath) {
               await waitForImageUploadToSettle(groupPage, i + 1);
+              await ensureComposerHasImage(groupPage, selectedImagePath, i + 1);
             }
             console.log(`[group ${i + 1}] Submitting post...`);
             startTimer(`Group ${i + 1} submit`);
             await submitPost(groupPage, {
-              requireImage: false,  // Allow text-only posts if image fails
+              requireImage: !!selectedImagePath,  // Require image if one was selected
               imagePath: selectedImagePath,
               groupIndex: i + 1,
             });
