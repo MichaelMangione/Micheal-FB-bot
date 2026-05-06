@@ -8,6 +8,7 @@ import {
   FB_PASSWORD,
   HEADLESS,
   POST_IMAGE_DIR,
+  REQUIRE_TEXT_AND_IMAGE,
   PAUSE_AFTER_COMPOSE_MS,
   RESET_POSTS,
   SKIP_POST,
@@ -835,6 +836,73 @@ async function submitPost(page, { requireImage = false, imagePath = null, groupI
   throw new Error('Post click did not produce a submit confirmation (dialog still open).');
 }
 
+async function ensureTextAndImageBothPresent(page, groupIndex) {
+  const tag = `[group ${groupIndex}]`;
+  
+  if (!REQUIRE_TEXT_AND_IMAGE) return true; // Skip check if not required
+  
+  const result = await page.evaluate(() => {
+    const dialog = document.querySelector('[role="dialog"]');
+    if (!dialog) return { hasText: false, hasImage: false };
+    
+    // Check for text in composer
+    const textBox = dialog.querySelector('[role="textbox"], [contenteditable="true"]');
+    const textContent = (textBox?.textContent || '').trim();
+    const hasText = textContent.length > 0;
+    
+    // Check for image in composer (multiple methods)
+    let hasImage = false;
+    
+    // Method 1: File input with selected files
+    for (const input of dialog.querySelectorAll('input[type="file"]')) {
+      if (input.files && input.files.length > 0) {
+        hasImage = true;
+        break;
+      }
+    }
+    
+    // Method 2: Image elements (blob or data URLs)
+    if (!hasImage) {
+      for (const img of dialog.querySelectorAll('img')) {
+        const src = img.src || '';
+        if (src.startsWith('blob:') || src.startsWith('data:') || src.includes('scontent')) {
+          hasImage = true;
+          break;
+        }
+      }
+    }
+    
+    // Method 3: Background images
+    if (!hasImage) {
+      for (const el of dialog.querySelectorAll('[style]')) {
+        if (el.style.backgroundImage && (
+          el.style.backgroundImage.includes('blob:') ||
+          el.style.backgroundImage.includes('data:') ||
+          el.style.backgroundImage.includes('scontent')
+        )) {
+          hasImage = true;
+          break;
+        }
+      }
+    }
+    
+    return { hasText, hasImage, textLength: textContent.length };
+  });
+  
+  if (!result.hasText) {
+    console.warn(`${tag} ⚠️ VALIDATION FAILED: Text is missing in composer`);
+    throw new Error('Composer text validation failed: Text content is empty. Post not submitted.');
+  }
+  
+  if (!result.hasImage) {
+    console.warn(`${tag} ⚠️ VALIDATION FAILED: Image is missing in composer`);
+    throw new Error('Composer image validation failed: Image not detected. Post not submitted.');
+  }
+  
+  console.log(`${tag} ✅ Validation passed: Both text (${result.textLength} chars) and image present`);
+  return true;
+}
+
 async function checkForFacebookRestrictions(page, groupIndex) {
   const tag = `[group ${groupIndex}]`;
   try {
@@ -1080,6 +1148,10 @@ async function main() {
             if (selectedImagePath) {
               await waitForImageUploadToSettle(groupPage, i + 1);
             }
+            
+            // Validate that both text and image are present before submitting
+            await ensureTextAndImageBothPresent(groupPage, i + 1);
+            
             console.log(`[group ${i + 1}] Submitting post...`);
             startTimer(`Group ${i + 1} submit`);
             await submitPost(groupPage, {

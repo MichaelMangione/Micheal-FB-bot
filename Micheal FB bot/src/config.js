@@ -34,6 +34,9 @@ function resolveOptionalPath(raw) {
 /** Folder with images (jpg/png/gif/webp). One file is chosen at random. Empty = text only. */
 export const POST_IMAGE_DIR = resolveOptionalPath(process.env.POST_IMAGE_DIR);
 
+/** When true, enforces that every post must have BOTH text AND image. Prevents text-only or image-only posts. */
+export const REQUIRE_TEXT_AND_IMAGE = POST_IMAGE_DIR && (String(process.env.REQUIRE_TEXT_AND_IMAGE ?? 'true').toLowerCase() !== 'false');
+
 /** When true (default), composer is filled but Post is not clicked — safe for testing. */
 export const SKIP_POST = String(process.env.SKIP_POST ?? 'true').toLowerCase() !== 'false';
 
