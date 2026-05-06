@@ -724,11 +724,34 @@ async function submitPost(page, { requireImage = false, imagePath = null, groupI
     try {
       // FIRST: Try direct Post button click via evaluate (simplest)
       const posted = await page.evaluate(() => {
-        const postBtn = Array.from(document.querySelectorAll('[role="dialog"] [role="button"]')).find(btn => {
+        // First priority: exact "post" button
+        let postBtn = Array.from(document.querySelectorAll('[role="dialog"] [role="button"]')).find(btn => {
           const aria = (btn.getAttribute('aria-label') || '').toLowerCase();
           const text = (btn.textContent || '').toLowerCase().trim();
           return aria === 'post' || text === 'post';
         });
+        
+        // Fallback: any button containing "post" (handles "Post to [Group]")
+        if (!postBtn) {
+          postBtn = Array.from(document.querySelectorAll('[role="dialog"] [role="button"]')).find(btn => {
+            const aria = (btn.getAttribute('aria-label') || '').toLowerCase();
+            const text = (btn.textContent || '').toLowerCase().trim();
+            return aria.includes('post') || text.includes('post');
+          });
+        }
+        
+        // Last resort: largest button in dialog (usually submit button)
+        if (!postBtn) {
+          const allButtons = Array.from(document.querySelectorAll('[role="dialog"] [role="button"]'));
+          if (allButtons.length > 0) {
+            postBtn = allButtons.reduce((largest, btn) => {
+              const rect1 = btn.getBoundingClientRect();
+              const rect2 = largest.getBoundingClientRect();
+              return (rect1.width * rect1.height) > (rect2.width * rect2.height) ? btn : largest;
+            });
+          }
+        }
+        
         if (postBtn) {
           postBtn.click();
           return true;
