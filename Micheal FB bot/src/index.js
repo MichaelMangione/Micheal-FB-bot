@@ -84,7 +84,16 @@ async function restoreSessionCookies(page) {
 async function isLoggedInState(page) {
   try {
     const cookies = await page.cookies();
-    return hasUserCookie(cookies) && !isLoginOrCheckpointUrl(page.url());
+    const hasUser = hasUserCookie(cookies);
+    const onLoginPage = isLoginOrCheckpointUrl(page.url());
+    const isLogged = hasUser && !onLoginPage;
+    
+    // Log debug info if not logged in
+    if (!isLogged) {
+      console.log(`[isLoggedInState-debug] hasUserCookie=${hasUser}, isLoginPage=${onLoginPage}, url=${page.url()}`);
+    }
+    
+    return isLogged;
   } catch {
     return false;
   }
@@ -123,8 +132,10 @@ async function autoLoginIfNeeded(page) {
           if (handle) {
             try {
               await handle.click();
+              await sleep(300);
               return true;
-            } catch {
+            } catch (e) {
+              console.log(`[login] ✗ Click failed for ${selector}: ${e.message}`);
               /* continue */
             }
           }
@@ -133,38 +144,105 @@ async function autoLoginIfNeeded(page) {
       };
 
       console.log('[login] ====== STEP 1: Looking for Email Field ======');
-      const emailField = await page.$('input[name="email"], input[type="email"], #email');
-      if (emailField) {
-        await emailField.click({ clickCount: 3 });
-        await page.keyboard.type(FB_EMAIL, { delay: 60 });
-        console.log('[login] Email field filled');
-        await tryClick(['button[name="login"]', 'button[type="submit"]', 'div[role="button"][aria-label*="Continue" i]']);
-      } else {
-        console.log('[login] Email field not immediately visible');
+      let emailFound = false;
+      let passwordFound = false;
+      
+      // Try to find and fill email field with multiple retries
+      for (let emailAttempt = 0; emailAttempt < 3; emailAttempt++) {
+        const emailField = await page.$('input[name="email"], input[type="email"], #email');
+        if (emailField) {
+          await emailField.click({ clickCount: 3 });
+          await page.keyboard.type(FB_EMAIL, { delay: 60 });
+          console.log('[login] ✓ Email field filled');
+          emailFound = true;
+          await sleep(500);
+          break;
+        } else if (emailAttempt < 2) {
+          console.log('[login] Email field not visible, waiting...');
+          await sleep(1000);
+        }
+      }
+
+      if (!emailFound) {
+        console.log('[login] Email field not found after retries');
       }
 
       console.log('[login] ====== STEP 2: Looking for Continue Button ======');
-      await tryClick([
+      const continueClicked = await tryClick([
         'button[name="login"]',
         'button[type="submit"]',
         'div[role="button"][aria-label*="Continue" i]',
         'div[role="button"][aria-label*="Log In" i]',
       ]);
+      
+      if (continueClicked) {
+        console.log('[login] ✓ Continue/Login button clicked');
+      } else {
+        console.log('[login] ✗ No clickable button found from: button[name="login"], button[type="submit"], div[role="button"][aria-label*="Continue" i], div[role="button"][aria-label*="Log In" i]');
+        
+        // Fallback: try text-based click
+        const textClicked = await page.evaluate(() => {
+          for (const btn of document.querySelectorAll('[role="button"], button')) {
+            const text = btn.textContent.toLowerCase().trim();
+            if (text === 'continue' || text === 'next' || text === 'log in' || text === 'login') {
+              btn.click();
+              console.log(`[login] ✓ Clicked by text: "${btn.textContent}"`);
+              return true;
+            }
+          }
+          return false;
+        });
+        
+        if (!textClicked) {
+          console.log('[login] Selector-based continue failed, trying text-based...');
+          const textClicked2 = await page.evaluate(() => {
+            for (const btn of document.querySelectorAll('*')) {
+              const text = btn.textContent.toLowerCase().trim();
+              if (text === 'continue') {
+                btn.click();
+                console.log(`[login] ✓ Clicked by text: "Continue"`);
+                return true;
+              }
+            }
+            return false;
+          });
+        }
+      }
+
+      await sleep(1500);
 
       console.log('[login] ====== STEP 3: Looking for Password Field ======');
-      const passwordField = await page.$('input[name="pass"], input[type="password"], #pass');
-      if (passwordField) {
-        await passwordField.click({ clickCount: 3 });
-        await page.keyboard.type(FB_PASSWORD, { delay: 60 });
-        console.log('[login] Password field filled');
-        await tryClick(['button[name="login"]', 'button[type="submit"]', 'div[role="button"][aria-label*="Log In" i]']);
-      } else {
-        console.log('[login] No password field found - already logged in or unexpected state');
+      // Try to find and fill password field
+      for (let passAttempt = 0; passAttempt < 3; passAttempt++) {
+        const passwordField = await page.$('input[name="pass"], input[type="password"], #pass');
+        if (passwordField) {
+          await passwordField.click({ clickCount: 3 });
+          await page.keyboard.type(FB_PASSWORD, { delay: 60 });
+          console.log('[login] ✓ Password field filled');
+          passwordFound = true;
+          await sleep(500);
+          
+          // Click login after password
+          await tryClick(['button[name="login"]', 'button[type="submit"]', 'div[role="button"][aria-label*="Log In" i]']);
+          break;
+        } else if (passAttempt < 2) {
+          console.log('[login] No password field found - waiting...');
+          await sleep(1000);
+        }
+      }
+
+      if (!passwordFound) {
+        console.log('[login] No password field found - page state unclear');
       }
 
       await sleep(2000);
       console.log('[login] ====== AUTO-LOGIN COMPLETE ======');
-      return isLoggedInState(page);
+      
+      const loggedIn = await isLoggedInState(page);
+      if (!loggedIn) {
+        console.warn('[login] ⚠️ Still on login page after auto-login attempt');
+      }
+      return loggedIn;
     } catch (err) {
       if (!transientError(err) || attempt === 3) throw err;
       console.warn(`[login] Transient page reset during login (attempt ${attempt}/3). Retrying...`);
@@ -866,8 +944,14 @@ async function main() {
   await sleep(2000);
 
   if (!(await isLoggedInState(page))) {
+    console.log('\n⚠️  Auto-login failed. Manual login required.\n');
+    console.log('📖 Instructions:');
+    console.log('1. A browser window should be open with Facebook loaded');
+    console.log('2. Log in to Facebook manually in that browser window');
+    console.log('3. Once you\'re logged in, return here and press Enter\n');
     const ok = await waitUntilLoggedIn(page);
     if (!ok) {
+      console.error('\n❌ Login was not completed. Exiting.');
       await browser.close();
       throw new Error('Login was not completed.');
     }
@@ -1013,7 +1097,21 @@ async function main() {
             await sleep(30000);
           }
         } catch (err) {
-          console.error(`❌ [group ${i + 1}] Error: ${err.message}`);
+          const errorMsg = err.message || '';
+          const isLoginError = errorMsg.toLowerCase().includes('still on login page');
+          
+          console.error(`❌ [group ${i + 1}] Error: ${errorMsg}`);
+          
+          // If first group fails due to login, abort early instead of wasting time on other groups
+          if (i === 0 && isLoginError) {
+            console.error('\n❌ Session expired on first group. Cannot continue without valid login.');
+            console.error('💡 To fix this:');
+            console.error('  1. Delete the browser profile/user data directory');
+            console.error('  2. Restart the bot - it will prompt for manual login');
+            console.error('  3. Or manually set valid FB_EMAIL and FB_PASSWORD environment variables\n');
+            throw err;
+          }
+          
           if (String(err.message || '').toLowerCase().includes('connection closed')) {
             throw err;
           }
