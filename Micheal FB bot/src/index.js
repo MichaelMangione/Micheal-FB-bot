@@ -184,6 +184,10 @@ async function openGroupComposer(page) {
     'div[role="button"][aria-label*="Create post" i]',
     'a[aria-label*="Create a post" i]',
     'button[aria-label*="Create a post" i]',
+    // Additional selectors for Facebook UI variations
+    '[role="button"][aria-label*="post" i]',
+    'div[role="button"][aria-label*="what" i]',
+    'button[aria-label*="what" i]',
   ];
 
   // Composer can be slow to render in some groups, so retry a few times.
@@ -191,10 +195,20 @@ async function openGroupComposer(page) {
     const alreadyOpen = await page.$('[role="dialog"] [role="textbox"], [role="dialog"] div[contenteditable="true"]');
     if (alreadyOpen) return;
 
+    // Scroll to top to ensure composer button is visible
+    await page.evaluate(() => window.scrollTo(0, 0));
+    await sleep(300);
+
+    // First try: Use provided selectors
     for (const selector of openers) {
       const el = await page.$(selector);
       if (el) {
         try {
+          // Ensure element is visible
+          await page.evaluate(el => {
+            el.scrollIntoView({ behavior: 'instant', block: 'center' });
+          }, el);
+          await sleep(200);
           await el.click();
           await sleep(900);
         } catch {
@@ -204,16 +218,25 @@ async function openGroupComposer(page) {
     }
 
     // Fallback: click by visible text/aria across button-like elements.
-    await page.evaluate(() => {
-      const candidates = ['create a post', 'write something', "what\'s on your mind", 'create post'];
-      for (const el of document.querySelectorAll('[role="button"], button, a')) {
+    const fallbackResult = await page.evaluate(() => {
+      const candidates = [
+        'create a post', 
+        'write something', 
+        "what\'s on your mind",
+        "what's on your mind",
+        'create post',
+        'post something',
+      ];
+      for (const el of document.querySelectorAll('[role="button"], button, a, div[role="button"]')) {
         const aria = (el.getAttribute('aria-label') || '').toLowerCase();
-        const text = (el.textContent || '').toLowerCase();
-        if (candidates.some((w) => aria.includes(w) || text.includes(w))) {
-          (el).click();
-          break;
+        const text = (el.textContent || '').toLowerCase().trim();
+        if (candidates.some((w) => aria.includes(w) || text.includes(w) || text === w)) {
+          console.log(`[composer-fallback] Clicking: aria="${aria}" text="${text}"`);
+          el.click();
+          return true;
         }
       }
+      return false;
     });
 
     try {
@@ -223,7 +246,34 @@ async function openGroupComposer(page) {
       );
       return;
     } catch {
-      console.log(`[composer] Attempt ${attempt}/3 failed, retrying...`);
+      console.log(`[composer] Attempt ${attempt}/3: Dialog didn't open`);
+      if (attempt === 3) {
+        // Save debug screenshot
+        try {
+          await page.screenshot({ path: './debug_composer_failed.png', fullPage: true });
+          console.log('[composer-debug] Screenshot saved to debug_composer_failed.png');
+          
+          // Log page structure for debugging
+          const pageInfo = await page.evaluate(() => {
+            const buttons = Array.from(document.querySelectorAll('[role="button"], button, a, div[role="button"]'))
+              .slice(0, 20)
+              .map(el => ({
+                aria: el.getAttribute('aria-label'),
+                text: el.textContent.trim().slice(0, 50),
+                tag: el.tagName,
+              }));
+            return {
+              url: location.href,
+              buttonsFound: buttons.length,
+              buttonSamples: buttons,
+              dialogExists: !!document.querySelector('[role="dialog"]'),
+            };
+          });
+          console.log('[composer-debug] Page info:', JSON.stringify(pageInfo, null, 2));
+        } catch (e) {
+          console.log('[composer-debug] Failed to gather debug info:', e.message);
+        }
+      }
       await sleep(1200);
     }
   }
@@ -669,6 +719,46 @@ async function submitPost(page, { requireImage = false, imagePath = null, groupI
   throw new Error('Post click did not produce a submit confirmation (dialog still open).');
 }
 
+async function checkForFacebookRestrictions(page, groupIndex) {
+  const tag = `[group ${groupIndex}]`;
+  try {
+    const restrictions = await page.evaluate(() => {
+      const bodyText = document.body.innerText.toLowerCase();
+      const htmlText = document.documentElement.innerHTML.toLowerCase();
+      
+      const blockedKeywords = [
+        'action blocked',
+        'action not allowed',
+        'rate limit',
+        'too many requests',
+        'try again later',
+        'temporarily blocked',
+        'account restricted',
+        'suspicious activity',
+        'violates community standards',
+        'this action cannot be performed',
+      ];
+      
+      const found = blockedKeywords.filter(keyword =>
+        bodyText.includes(keyword) || htmlText.includes(keyword)
+      );
+      
+      return {
+        hasRestrictions: found.length > 0,
+        foundKeywords: found,
+      };
+    });
+    
+    if (restrictions.hasRestrictions) {
+      console.warn(`${tag} ⚠️ Potential Facebook restrictions detected: ${restrictions.foundKeywords.join(', ')}`);
+      return true;
+    }
+  } catch (e) {
+    console.warn(`${tag} Could not check for restrictions: ${e.message}`);
+  }
+  return false;
+}
+
 async function navigateToGroupWithRetry(page, url, groupIndex) {
   const label = `[group ${groupIndex}]`;
   const attempts = [
@@ -807,8 +897,13 @@ async function main() {
             await resolveCaptchasUntilClear(groupPage, CAPTCHA_API_KEY);
           }
 
+          // Check for Facebook restrictions before attempting to compose
+          await checkForFacebookRestrictions(groupPage, i + 1);
+
           console.log(`[group ${i + 1}] Opening composer...`);
           startTimer(`Group ${i + 1} composer open`);
+          // Wait for composer UI elements to render
+          await sleep(1500);
           await openGroupComposer(groupPage);
           endTimer(`Group ${i + 1} composer open`);
 
