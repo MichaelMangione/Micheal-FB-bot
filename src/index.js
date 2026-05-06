@@ -142,15 +142,24 @@ async function autoLoginIfNeeded(page) {
 
       const tryClick = async (selectors) => {
         for (const selector of selectors) {
-          const handle = await page.$(selector);
-          if (handle) {
-            try {
-              await handle.click();
-              console.log(`[login] ✓ Clicked: ${selector}`);
-              return true;
-            } catch (err) {
-              console.log(`[login] ✗ Click failed for ${selector}: ${err.message}`);
-              /* continue */
+          for (let retries = 0; retries < 2; retries++) {
+            const handle = await page.$(selector);
+            if (handle) {
+              try {
+                await handle.click();
+                console.log(`[login] ✓ Clicked: ${selector}`);
+                return true;
+              } catch (err) {
+                const msg = String(err?.message || '').toLowerCase();
+                if (msg.includes('detached')) {
+                  console.log(`[login] Node detached for ${selector}, retrying in 1s...`);
+                  await sleep(1000);
+                  continue;  // Retry the same selector
+                } else {
+                  console.log(`[login] ✗ Click failed for ${selector}: ${err.message}`);
+                  break;  // Different error, move to next selector
+                }
+              }
             }
           }
         }
@@ -212,7 +221,17 @@ async function autoLoginIfNeeded(page) {
         continueClicked = await tryClickByText(['Continue', 'Next', 'Log in']);
       }
       
-      await sleep(2000);  // Wait for password field to appear
+      // Wait for page to transition and password field to appear
+      console.log('[login] Waiting for password field to appear...');
+      try {
+        await page.waitForFunction(
+          () => !!document.querySelector('input[name="pass"], input[type="password"], #pass'),
+          { timeout: 8000 }
+        );
+        console.log('[login] ✓ Password field appeared');
+      } catch {
+        console.log('[login] Password field did not appear within 8s');
+      }
 
       console.log('[login] ====== STEP 3: Looking for Password Field ======');
       const passwordField = await page.$('input[name="pass"], input[type="password"], #pass');
@@ -321,6 +340,25 @@ async function autoLoginIfNeeded(page) {
         }
       } else {
         console.log('[login] No password field found - page state unclear');
+        
+        // If we're still on a login page and couldn't get the password field, 
+        // try navigating to facebook.com to restore session
+        const pageUrl = page.url();
+        if (pageUrl.includes('/login') && !await isLoggedInState(page)) {
+          console.log('[login] ⚠️ Still on login page, attempting to restore from facebook.com...');
+          try {
+            await page.goto('https://www.facebook.com', { waitUntil: 'domcontentloaded', timeout: 15000 });
+            await sleep(3000);
+            
+            // Check if we're logged in now
+            if (await isLoggedInState(page)) {
+              console.log('[login] ✓ Session restored from facebook.com');
+              return true;
+            }
+          } catch (e) {
+            console.log(`[login] Navigation to facebook.com failed: ${e.message}`);
+          }
+        }
       }
 
       await sleep(2000);

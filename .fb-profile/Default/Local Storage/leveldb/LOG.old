@@ -1,2 +1,3 @@
-2026/05/07-00:05:12.079 62fc Creating DB C:\Users\hp\Downloads\Micheal FB bot\.fb-profile\Default\Local Storage\leveldb since it was missing.
-2026/05/07-00:05:12.088 62fc Reusing MANIFEST C:\Users\hp\Downloads\Micheal FB bot\.fb-profile\Default\Local Storage\leveldb/MANIFEST-000001
+2026/05/07-00:21:11.503 2764 Reusing MANIFEST C:\Users\hp\Downloads\Micheal FB bot\.fb-profile\Default\Local Storage\leveldb/MANIFEST-000001
+2026/05/07-00:21:11.504 2764 Recovering log #3
+2026/05/07-00:21:11.505 2764 Reusing old log C:\Users\hp\Downloads\Micheal FB bot\.fb-profile\Default\Local Storage\leveldb/000003.log 
