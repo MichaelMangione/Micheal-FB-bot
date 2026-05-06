@@ -352,22 +352,35 @@ async function openGroupComposer(page) {
 
     // Click the composer with simple, fast selector - MORE AGGRESSIVE
     const clicked = await page.evaluate(() => {
+      // EXCLUSION list: buttons we should NOT click
+      const EXCLUDE_KEYWORDS = ['invite', 'join', 'message', 'share', 'follow', 'create new account', 'create account', 'sign up', 'login'];
+      
+      const isExcludedButton = (text, ariaLabel) => {
+        const combined = `${text} ${ariaLabel}`.toLowerCase();
+        return EXCLUDE_KEYWORDS.some(keyword => combined.includes(keyword));
+      };
+
       // Try the most common Facebook selectors first
       const selectors = [
         () => document.querySelector('[data-testid="status_composer_container"]')?.parentElement?.querySelector('[role="button"]'),
         () => document.querySelector('[data-testid="status_composer_container"]')?.querySelector('[role="button"]'),
         () => Array.from(document.querySelectorAll('[role="button"]')).find(b => {
           const aria = (b.getAttribute('aria-label') || '').toLowerCase();
-          return aria.includes('write') || aria.includes('create') || aria.includes('share') || aria.includes('post');
+          const text = (b.textContent || '').toLowerCase();
+          if (isExcludedButton(text, aria)) return false;
+          return (aria.includes('write') || aria.includes('post') || text.includes('what')) && 
+                 !aria.includes('invite') && !aria.includes('join') && !aria.includes('message');
         }),
-        // AGGRESSIVE: Just find ANY large button in the main feed area
+        // AGGRESSIVE: Find large buttons in main feed area (but exclude wrong ones)
         () => Array.from(document.querySelectorAll('[role="main"] [role="button"], [role="region"] [role="button"]')).find(b => {
+          if (isExcludedButton(b.textContent, b.getAttribute('aria-label'))) return false;
           const rect = b.getBoundingClientRect();
           const looksLarge = rect.width > 80 && rect.height > 25;
-          return looksLarge && rect.top < window.innerHeight * 0.4;  // In upper half of page
+          return looksLarge && rect.top < window.innerHeight * 0.4;
         }),
-        // FALLBACK: ANY button with at least 50px width
+        // FALLBACK: Large button with good text content (but not excluded)
         () => Array.from(document.querySelectorAll('[role="button"]')).find(b => {
+          if (isExcludedButton(b.textContent, b.getAttribute('aria-label'))) return false;
           const rect = b.getBoundingClientRect();
           return rect.width > 50 && rect.height > 20 && b.textContent.length > 2;
         })
@@ -376,7 +389,7 @@ async function openGroupComposer(page) {
       for (const selector of selectors) {
         try {
           const el = selector();
-          if (el) {
+          if (el && !isExcludedButton(el.textContent, el.getAttribute('aria-label'))) {
             const rect = el.getBoundingClientRect();
             if (rect.height > 15) {
               console.log('[composer-debug] Clicking button:', el.textContent.substring(0, 30), el.getAttribute('aria-label'));
