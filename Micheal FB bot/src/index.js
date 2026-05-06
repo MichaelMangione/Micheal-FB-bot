@@ -1011,17 +1011,46 @@ async function main() {
   await autoLoginIfNeeded(page);
   await sleep(2000);
 
-  if (!(await isLoggedInState(page))) {
-    console.log('\n⚠️  Auto-login failed. Manual login required.\n');
-    console.log('📖 Instructions:');
-    console.log('1. A browser window should be open with Facebook loaded');
-    console.log('2. Log in to Facebook manually in that browser window');
-    console.log('3. Once you\'re logged in, return here and press Enter\n');
+  const isLoggedIn = await isLoggedInState(page);
+  const pageAllCookies = await page.cookies();
+  const hasCUserCookie = pageAllCookies.some(c => c.name === 'c_user' && c.value);
+  
+  console.log(`[session-debug] isLoggedIn=${isLoggedIn}, hasCUserCookie=${hasCUserCookie}, cookies=${pageAllCookies.length}`);
+
+  if (!isLoggedIn) {
+    console.error('\n❌ AUTO-LOGIN FAILED');
+    console.error(`   URL: ${page.url()}`);
+    console.error(`   Has c_user cookie: ${hasCUserCookie}`);
+    console.error(`   Total cookies: ${pageAllCookies.length}`);
+    
+    if (!hasCUserCookie) {
+      console.error('\n🔴 CRITICAL: No valid Facebook session established.');
+      console.error('\n⚠️  POSSIBLE CAUSES:');
+      console.error('   1. FB_EMAIL or FB_PASSWORD environment variable is incorrect');
+      console.error('   2. Account needs 2FA or additional verification');
+      console.error('   3. Facebook is blocking automated login attempts');
+      console.error('   4. Account is restricted/locked');
+      console.error('\n💡 TO FIX:');
+      console.error('   - Verify FB_EMAIL and FB_PASSWORD are correct');
+      console.error('   - Try logging in manually to check for blocks/2FA');
+      console.error('   - Delete .fb-profile directory to force fresh profile');
+      console.error('   - Restart the bot\n');
+      await browser.close();
+      throw new Error('Facebook session not established. Check credentials and try again.');
+    }
+    
+    // If we have some cookies but not fully logged in, try manual login
+    console.log('\n📞 Attempting manual login fallback...');
+    console.log('Instructions:');
+    console.log('1. A browser window should be open with Facebook');
+    console.log('2. Log in manually in that browser window');
+    console.log('3. Return here and press Enter once logged in\n');
+    
     const ok = await waitUntilLoggedIn(page);
     if (!ok) {
-      console.error('\n❌ Login was not completed. Exiting.');
+      console.error('\n❌ Manual login was not completed. Exiting.');
       await browser.close();
-      throw new Error('Login was not completed.');
+      throw new Error('Manual login was not completed.');
     }
   }
 
