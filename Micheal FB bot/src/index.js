@@ -197,7 +197,25 @@ async function openGroupComposer(page) {
 
     // Scroll to top to ensure composer button is visible
     await page.evaluate(() => window.scrollTo(0, 0));
-    await sleep(300);
+    await sleep(500);
+
+    // Wait for composer area to be present on page
+    const composerAreaExists = await page.evaluate(() => {
+      // Look for the composer wrapper (usually contains the "What's on your mind" area)
+      const possibleAreas = document.querySelectorAll('[role="region"], form, .xrbtesq');
+      for (const area of possibleAreas) {
+        const text = (area.textContent || '').toLowerCase();
+        if (text.includes('what') || text.includes('write') || text.includes('create')) {
+          return true;
+        }
+      }
+      return false;
+    });
+
+    if (!composerAreaExists && attempt === 1) {
+      console.log(`[composer] Waiting for composer area to render...`);
+      await sleep(1500);
+    }
 
     // First try: Use provided selectors
     for (const selector of openers) {
@@ -218,6 +236,7 @@ async function openGroupComposer(page) {
     }
 
     // Fallback: click by visible text/aria across button-like elements.
+    // Be more restrictive to avoid clicking wrong buttons like "Invite"
     const fallbackResult = await page.evaluate(() => {
       const candidates = [
         'create a post', 
@@ -227,15 +246,34 @@ async function openGroupComposer(page) {
         'create post',
         'post something',
       ];
+      
+      const exclusions = ['invite', 'join', 'message', 'share', 'follow'];
+      
       for (const el of document.querySelectorAll('[role="button"], button, a, div[role="button"]')) {
         const aria = (el.getAttribute('aria-label') || '').toLowerCase();
         const text = (el.textContent || '').toLowerCase().trim();
+        const parent = (el.parentElement?.textContent || '').toLowerCase();
+        
+        // Skip if it matches exclusion keywords
+        const isExcluded = exclusions.some(ex => aria.includes(ex) || text.includes(ex));
+        if (isExcluded) continue;
+        
+        // Match if it contains a candidate phrase
         if (candidates.some((w) => aria.includes(w) || text.includes(w) || text === w)) {
-          console.log(`[composer-fallback] Clicking: aria="${aria}" text="${text}"`);
+          console.log(`[composer-fallback] Found composer button: aria="${aria.slice(0,50)}" text="${text.slice(0,50)}"`);
           el.click();
           return true;
         }
       }
+      
+      // If no match found, log available buttons for debugging
+      const buttons = Array.from(document.querySelectorAll('[role="button"], button'))
+        .slice(0, 10)
+        .map(b => ({
+          aria: b.getAttribute('aria-label'),
+          text: b.textContent.slice(0, 30)
+        }));
+      console.log(`[composer-debug] No composer button found. Available buttons: ${JSON.stringify(buttons)}`);
       return false;
     });
 
