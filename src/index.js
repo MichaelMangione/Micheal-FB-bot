@@ -629,29 +629,36 @@ async function uploadImageToComposer(groupPage, imagePath, groupIndex) {
 
   if (imageInputs.length > 0) {
     console.log(`${tag} Found ${imageInputs.length} image-capable input(s) in dialog, trying direct upload...`);
-    const targetInput = imageInputs[imageInputs.length - 1];
 
-    try {
-      await targetInput.uploadFile(imagePath);
-      console.log(`${tag} ✅ Direct uploadFile() on dialog input`);
+    for (const [index, targetInput] of imageInputs.entries()) {
+      try {
+        await targetInput.uploadFile(imagePath);
+        console.log(`${tag} ✅ Direct uploadFile() on dialog input #${index + 1}`);
 
-      await sleep(2000);
+        await sleep(2000);
 
-      const hasFiles = await groupPage.evaluate(() => {
-        const dialog = document.querySelector('div[role="dialog"]');
-        if (!dialog) return false;
-        for (const input of dialog.querySelectorAll('input[type="file"]')) {
-          if (input.files && input.files.length > 0) return true;
+        const hasFiles = await groupPage.evaluate(() => {
+          const dialog = document.querySelector('div[role="dialog"]');
+          if (!dialog) return false;
+          for (const input of dialog.querySelectorAll('input[type="file"]')) {
+            if (input.files && input.files.length > 0) return true;
+          }
+          return !!(
+            dialog.querySelector('img[src*="blob:"]') ||
+            dialog.querySelector('img[src*="data:"]') ||
+            dialog.querySelector('[aria-label*="Remove photo" i]') ||
+            dialog.querySelector('[aria-label*="Edit photo" i]') ||
+            dialog.querySelector('[data-testid*="photo"]')
+          );
+        });
+
+        if (hasFiles) {
+          console.log(`${tag} ✅ File uploaded directly in dialog`);
+          return true;
         }
-        return false;
-      });
-
-      if (hasFiles) {
-        console.log(`${tag} ✅ File uploaded directly in dialog`);
-        return true;
+      } catch (e) {
+        console.log(`${tag} ⚠️ Direct dialog upload failed for input #${index + 1}: ${e.message}`);
       }
-    } catch (e) {
-      console.log(`${tag} ⚠️ Direct dialog upload failed: ${e.message}`);
     }
   }
 
@@ -847,8 +854,8 @@ async function uploadImageToComposer(groupPage, imagePath, groupIndex) {
     const injectionSuccess = await groupPage.evaluate(
       (base64, mime) => {
         try {
-          // Try to find the file input and inject via blob
-          const fileInputs = document.querySelectorAll('input[type="file"]');
+          const dialog = document.querySelector('div[role="dialog"]');
+          const fileInputs = dialog ? dialog.querySelectorAll('input[type="file"]') : document.querySelectorAll('input[type="file"]');
           if (fileInputs.length === 0) {
             console.log('[inject-debug] No file inputs found');
             return false;
@@ -869,14 +876,21 @@ async function uploadImageToComposer(groupPage, imagePath, groupIndex) {
           const file = new File([blob], 'image.jpg', { type: mime });
           dt.items.add(file);
           
-          input.files = dt.files;
+          try {
+            input.files = dt.files;
+          } catch {
+            Object.defineProperty(input, 'files', {
+              configurable: true,
+              get: () => dt.files,
+            });
+          }
           
           // Trigger change event
           input.dispatchEvent(new Event('change', { bubbles: true }));
           input.dispatchEvent(new Event('input', { bubbles: true }));
           
-          console.log('[inject-debug] File injected, files count:', input.files.length);
-          return input.files.length > 0;
+          console.log('[inject-debug] File injected, files count:', input.files ? input.files.length : 0);
+          return !!(input.files && input.files.length > 0);
         } catch (e) {
           console.log('[inject-debug] Injection error:', e.message);
           return false;
