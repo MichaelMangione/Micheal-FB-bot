@@ -738,10 +738,15 @@ async function uploadImageToComposer(groupPage, imagePath, groupIndex) {
     // Verify file path exists and is accessible
     console.log(`${tag} Attempting to upload: ${imagePath}`);
     
-    await composerInput.uploadFile(imagePath);
-    console.log(`${tag} ✅ uploadFile() called on composer input (index ${inputsAfter})`);
+    // Try standard uploadFile first
+    try {
+      await composerInput.uploadFile(imagePath);
+      console.log(`${tag} ✅ uploadFile() called on composer input (index ${inputsAfter})`);
+    } catch (uploadErr) {
+      console.log(`${tag} ⚠️ uploadFile() failed: ${uploadErr.message}, trying alternative method...`);
+    }
 
-    // Wait a bit for the input to process the file
+    // Wait for the input to process the file
     await sleep(2000);
 
     // Verify the file was accepted by the input
@@ -760,28 +765,67 @@ async function uploadImageToComposer(groupPage, imagePath, groupIndex) {
       console.log(`${tag} ✅ Image file accepted by input element`);
       await sleep(2000); // Brief pause for preview to start rendering
       return true;
+    }
+    
+    // If standard methods failed, try base64 injection (for headless/restricted environments)
+    console.log(`${tag} ⚠️ Standard upload failed, trying base64 injection...`);
+    const fileBuffer = fs.readFileSync(imagePath);
+    const base64Data = fileBuffer.toString('base64');
+    const mimeType = imagePath.endsWith('.jpg') || imagePath.endsWith('.jpeg') ? 'image/jpeg' : 'image/png';
+    
+    const injectionSuccess = await groupPage.evaluate(
+      (base64, mime) => {
+        try {
+          // Try to find the file input and inject via blob
+          const fileInputs = document.querySelectorAll('input[type="file"]');
+          if (fileInputs.length === 0) {
+            console.log('[inject-debug] No file inputs found');
+            return false;
+          }
+          
+          const input = fileInputs[fileInputs.length - 1];
+          
+          // Convert base64 to blob
+          const binaryStr = atob(base64);
+          const bytes = new Uint8Array(binaryStr.length);
+          for (let i = 0; i < binaryStr.length; i++) {
+            bytes[i] = binaryStr.charCodeAt(i);
+          }
+          const blob = new Blob([bytes], { type: mime });
+          
+          // Create a new FileList-like structure
+          const dt = new DataTransfer();
+          const file = new File([blob], 'image.jpg', { type: mime });
+          dt.items.add(file);
+          
+          input.files = dt.files;
+          
+          // Trigger change event
+          input.dispatchEvent(new Event('change', { bubbles: true }));
+          input.dispatchEvent(new Event('input', { bubbles: true }));
+          
+          console.log('[inject-debug] File injected, files count:', input.files.length);
+          return input.files.length > 0;
+        } catch (e) {
+          console.log('[inject-debug] Injection error:', e.message);
+          return false;
+        }
+      },
+      base64Data,
+      mimeType
+    );
+    
+    if (injectionSuccess) {
+      console.log(`${tag} ✅ Image injected via base64`);
+      await sleep(2000);
+      return true;
     } else {
-      console.log(`${tag} ❌ File input shows no files after uploadFile()`);
-      
-      // Try alternative: check if Facebook shows upload progress/preview elements
-      const hasUploadProgress = await groupPage.evaluate(() => {
-        return !!(
-          document.querySelector('[aria-label*="Uploading" i]') ||
-          document.querySelector('[aria-label*="Processing" i]') ||
-          document.querySelector('[class*="upload" i]') ||
-          document.querySelector('img[src*="blob:"]')
-        );
-      });
-      
-      if (hasUploadProgress) {
-        console.log(`${tag} ⚠️ Upload in progress (preview not ready yet) - accepting optimistically`);
-        return true;
-      }
-      
+      console.log(`${tag} ❌ Base64 injection failed`);
       return false;
     }
+    
   } catch (err) {
-    console.log(`${tag} ❌ Upload failed: ${err.message}`);
+    console.log(`${tag} ❌ Upload error: ${err.message}`);
     return false;
   }
 }
