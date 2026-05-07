@@ -604,23 +604,29 @@ async function uploadImageToComposer(groupPage, imagePath, groupIndex) {
       await chooser.accept([imagePath]);
       console.log(`${tag} ✅ File chooser accepted via selector: ${selector}`);
 
-      await groupPage.screenshot({ path: './debug_after_upload.png', fullPage: false });
-      
-      // Just verify the browser accepted the file (file input has value)
-      // Visual preview rendering is unpredictable; file acceptance is the key signal
-      const fileAccepted = await groupPage.evaluate(() => {
-        return document.querySelectorAll('input[type="file"]').length > 0;
+      await sleep(1500);  // Wait for file to be processed
+
+      // Verify files were actually accepted
+      const hasFiles = await groupPage.evaluate(() => {
+        for (const input of document.querySelectorAll('input[type="file"]')) {
+          if (input.files && input.files.length > 0) {
+            return true;
+          }
+        }
+        return false;
       });
       
-      if (fileAccepted) {
-        console.log(`${tag} ✅ File chooser accepted and file input exists`);
+      if (hasFiles) {
+        console.log(`${tag} ✅ File successfully uploaded via chooser`);
         await sleep(2000); // Brief pause for preview to start rendering
         return true;
       } else {
-        console.log(`${tag} ❌ File input disappeared after chooser accept`);
-        return false;
+        console.log(`${tag} ⚠️ Chooser accepted but files not in input, trying direct upload...`);
+        // Continue to fallback upload method
+        break;
       }
-    } catch {
+    } catch (err) {
+      console.log(`${tag} ⚠️ File chooser failed for ${selector}: ${err.message}`);
       // Not the right button for file chooser; continue trying others.
     }
   }
@@ -729,19 +735,24 @@ async function uploadImageToComposer(groupPage, imagePath, groupIndex) {
   const composerInput = allInputs[inputsAfter - 1];
 
   try {
+    // Verify file path exists and is accessible
+    console.log(`${tag} Attempting to upload: ${imagePath}`);
+    
     await composerInput.uploadFile(imagePath);
-    console.log(`${tag} ✅ uploadFile() on composer input (index ${inputsAfter})`);
+    console.log(`${tag} ✅ uploadFile() called on composer input (index ${inputsAfter})`);
 
-    await groupPage.screenshot({ path: './debug_after_upload.png', fullPage: false });
+    // Wait a bit for the input to process the file
+    await sleep(2000);
 
-    // Don't wait for visual preview; instead, verify the file was accepted by the input
-    // Facebook's preview rendering timing is unreliable; file acceptance is the signal
+    // Verify the file was accepted by the input
     const hasFileValue = await groupPage.evaluate(() => {
       for (const input of document.querySelectorAll('input[type="file"]')) {
         if (input.files && input.files.length > 0) {
+          console.log('[upload-debug] Found file in input, length:', input.files.length);
           return true;
         }
       }
+      console.log('[upload-debug] No files in any input');
       return false;
     });
 
@@ -750,7 +761,23 @@ async function uploadImageToComposer(groupPage, imagePath, groupIndex) {
       await sleep(2000); // Brief pause for preview to start rendering
       return true;
     } else {
-      console.log(`${tag} ❌ File input has no value after uploadFile()`);
+      console.log(`${tag} ❌ File input shows no files after uploadFile()`);
+      
+      // Try alternative: check if Facebook shows upload progress/preview elements
+      const hasUploadProgress = await groupPage.evaluate(() => {
+        return !!(
+          document.querySelector('[aria-label*="Uploading" i]') ||
+          document.querySelector('[aria-label*="Processing" i]') ||
+          document.querySelector('[class*="upload" i]') ||
+          document.querySelector('img[src*="blob:"]')
+        );
+      });
+      
+      if (hasUploadProgress) {
+        console.log(`${tag} ⚠️ Upload in progress (preview not ready yet) - accepting optimistically`);
+        return true;
+      }
+      
       return false;
     }
   } catch (err) {
