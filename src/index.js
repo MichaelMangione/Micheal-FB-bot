@@ -581,8 +581,46 @@ async function uploadImageToComposer(groupPage, imagePath, groupIndex) {
     return false;
   }
 
+  // Debug: Check file accessibility
+  try {
+    const stats = fs.statSync(imagePath);
+    console.log(`${tag} File size: ${stats.size} bytes, readable: ${(stats.mode & 0o400) !== 0}`);
+  } catch (e) {
+    console.log(`${tag} ⚠️ Cannot stat file: ${e.message}`);
+  }
+
   const inputsBefore = await groupPage.$$eval('input[type="file"]', (els) => els.length);
   console.log(`${tag} File inputs before photo click: ${inputsBefore}`);
+
+  // DIRECT APPROACH: Try to find and use file input without waiting for chooser
+  const allInputsBefore = await groupPage.$$('input[type="file"]');
+  if (allInputsBefore.length > 0) {
+    console.log(`${tag} Found ${allInputsBefore.length} existing file input(s), trying direct upload...`);
+    const lastInput = allInputsBefore[allInputsBefore.length - 1];
+    
+    try {
+      // Try uploadFile on existing input
+      await lastInput.uploadFile(imagePath);
+      console.log(`${tag} ✅ Direct uploadFile() on existing input`);
+      
+      await sleep(2000);
+      
+      // Check if it worked
+      const hasFiles = await groupPage.evaluate(() => {
+        for (const input of document.querySelectorAll('input[type="file"]')) {
+          if (input.files && input.files.length > 0) return true;
+        }
+        return false;
+      });
+      
+      if (hasFiles) {
+        console.log(`${tag} ✅ File uploaded directly`);
+        return true;
+      }
+    } catch (e) {
+      console.log(`${tag} ⚠️ Direct upload failed: ${e.message}`);
+    }
+  }
 
   // Preferred path: handle native file chooser directly.
   const chooserSelectors = [
