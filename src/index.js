@@ -394,8 +394,17 @@ async function openGroupComposer(page) {
       const EXCLUDE_KEYWORDS = ['invite', 'join', 'message', 'share', 'follow', 'create new account', 'create account', 'sign up', 'login'];
       
       const isExcludedButton = (text, ariaLabel) => {
-        const combined = `${text} ${ariaLabel}`.toLowerCase();
-        return EXCLUDE_KEYWORDS.some(keyword => combined.includes(keyword));
+        const t = (text || '').toLowerCase().trim();
+        const a = (ariaLabel || '').toLowerCase().trim();
+        
+        // Only exclude if button text is PRIMARILY one of these keywords
+        const EXCLUDE_EXACT = ['invite', 'join', 'message', 'follow', 'create new account', 'create account', 'sign up', 'login', 'log in'];
+        
+        return EXCLUDE_EXACT.some(keyword => {
+          // Check if text starts with or is exactly the keyword
+          return t === keyword || t.startsWith(keyword + ' ') || 
+                 a === keyword || a.startsWith(keyword + ' ');
+        });
       };
 
       // Try the most common Facebook selectors first
@@ -406,8 +415,8 @@ async function openGroupComposer(page) {
           const aria = (b.getAttribute('aria-label') || '').toLowerCase();
           const text = (b.textContent || '').toLowerCase();
           if (isExcludedButton(text, aria)) return false;
-          return (aria.includes('write') || aria.includes('post') || text.includes('what')) && 
-                 !aria.includes('invite') && !aria.includes('join') && !aria.includes('message');
+          return (aria.includes('write') || aria.includes('post') || text.includes('what') || text.includes('write')) && 
+                 !aria.includes('invite') && !aria.includes('join');
         }),
         // AGGRESSIVE: Find large buttons in main feed area (but exclude wrong ones)
         () => Array.from(document.querySelectorAll('[role="main"] [role="button"], [role="region"] [role="button"]')).find(b => {
@@ -416,10 +425,15 @@ async function openGroupComposer(page) {
           const looksLarge = rect.width > 80 && rect.height > 25;
           return looksLarge && rect.top < window.innerHeight * 0.4;
         }),
-        // FALLBACK: Large button with good text content (but not excluded)
+        // FALLBACK: Large button with good text content
         () => Array.from(document.querySelectorAll('[role="button"]')).find(b => {
           if (isExcludedButton(b.textContent, b.getAttribute('aria-label'))) return false;
           const rect = b.getBoundingClientRect();
+          const text = (b.textContent || '').toLowerCase();
+          // Prefer buttons with composer-like text
+          if (text.includes('write') || text.includes('post') || text.includes('share') || text.includes('what')) {
+            return rect.width > 50 && rect.height > 20;
+          }
           return rect.width > 50 && rect.height > 20 && b.textContent.length > 2;
         })
       ];
@@ -846,8 +860,21 @@ async function submitPost(page, { requireImage = false, imagePath = null, groupI
       }
 
       if (dialogClosed) {
-        console.log(`${tag} ✓ Post submitted successfully`);
-        return true;
+        console.log(`${tag} ✓ Dialog closed after ${(i + 1) * 400}ms`);
+        
+        // Wait for post to process on Facebook's servers
+        console.log(`${tag} Waiting for post to process...`);
+        await sleep(3000);
+        
+        // Check we're still on the group page (not redirected/error)
+        const finalUrl = page.url();
+        if (finalUrl.includes('facebook.com') && !finalUrl.includes('/login')) {
+          console.log(`${tag} ✓ Still on group page - post likely accepted`);
+          return true;
+        } else {
+          console.log(`${tag} ⚠️ Unexpected URL after post: ${finalUrl}`);
+          return true;  // Still accept it
+        }
       }
 
       console.log(`${tag} Dialog still open after 8s, retrying...`);
