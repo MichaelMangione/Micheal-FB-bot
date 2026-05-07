@@ -982,54 +982,34 @@ async function submitPost(page, { requireImage = false, imagePath = null, groupI
       for (let i = 0; i < 20; i++) {
         await sleep(400);
         
-        const state = await page.evaluate(() => {
-          const dialog = document.querySelector('[role="dialog"]');
-          if (!dialog) return { closed: true };
-          
-          // Check for success signals
-          const bodyText = (document.body?.innerText || '').toLowerCase();
-          const hasSuccess = bodyText.includes('post') && (
-            bodyText.includes('pending') || 
-            bodyText.includes('published') || 
-            bodyText.includes('submitted') ||
-            bodyText.includes('shared') ||
-            bodyText.includes('live')
-          );
-          
-          return { 
-            closed: false, 
-            hasSuccess,
-            bodyText: bodyText.substring(0, 200)
-          };
+        const isDialogClosed = await page.evaluate(() => {
+          return !document.querySelector('[role="dialog"] [role="textbox"], [role="dialog"] div[contenteditable="true"]');
         });
         
-        if (state.closed) {
+        if (isDialogClosed) {
           dialogClosed = true;
           console.log(`${tag} ✓ Dialog closed after ${(i + 1) * 400}ms`);
           break;
         }
-        
-        if (state.hasSuccess) {
-          console.log(`${tag} ✓ Success message detected: ${state.bodyText}`);
-          return true;
-        }
       }
 
       if (dialogClosed) {
-        console.log(`${tag} ✓ Dialog closed after ${(i + 1) * 400}ms`);
-        
         // Wait for post to process on Facebook's servers
-        console.log(`${tag} Waiting for post to process...`);
-        await sleep(3000);
+        console.log(`${tag} Waiting for post to finalize...`);
+        await sleep(2000);
         
-        // Check we're still on the group page (not redirected/error)
-        const finalUrl = page.url();
-        if (finalUrl.includes('facebook.com') && !finalUrl.includes('/login')) {
-          console.log(`${tag} ✓ Still on group page - post likely accepted`);
+        // Final verification: check the composer is really gone
+        const composerStillPresent = await page.evaluate(() => {
+          return !!document.querySelector('[role="dialog"] [role="textbox"], [role="dialog"] div[contenteditable="true"]');
+        });
+        
+        if (!composerStillPresent) {
+          console.log(`${tag} ✓ Post submitted successfully`);
           return true;
         } else {
-          console.log(`${tag} ⚠️ Unexpected URL after post: ${finalUrl}`);
-          return true;  // Still accept it
+          console.log(`${tag} ⚠️ Composer still visible after dialog close - may not have submitted`);
+          await sleep(2000);
+          continue;  // Retry
         }
       }
 
