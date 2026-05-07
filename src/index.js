@@ -603,33 +603,55 @@ async function uploadImageToComposer(groupPage, imagePath, groupIndex) {
   console.log(`${tag} File inputs before photo click: ${inputsBefore.length}`, 
     inputsBefore.slice(-2).map(i => `[${i.index}] ${i.name || 'unnamed'} accept=${i.accept}`).join(', '));
 
-  // DIRECT APPROACH: Try to find and use file input without waiting for chooser
-  const allInputsBefore = await groupPage.$$('input[type="file"]');
-  if (allInputsBefore.length > 0) {
-    console.log(`${tag} Found ${allInputsBefore.length} existing file input(s), trying direct upload...`);
-    const lastInput = allInputsBefore[allInputsBefore.length - 1];
-    
+  // DIRECT APPROACH: Try to find and use the active composer file input only.
+  const activeInputsBefore = await groupPage.$$eval('div[role="dialog"] input[type="file"]', (els) =>
+    els.map((el, i) => ({
+      index: i,
+      name: el.name,
+      accept: el.accept,
+      multiple: el.multiple,
+    }))
+  );
+  console.log(`${tag} Dialog file inputs before photo click: ${activeInputsBefore.length}`);
+
+  const activeInputs = await groupPage.$$('div[role="dialog"] input[type="file"]');
+  const imageInputs = [];
+  for (const input of activeInputs) {
     try {
-      // Try uploadFile on existing input
-      await lastInput.uploadFile(imagePath);
-      console.log(`${tag} ✅ Direct uploadFile() on existing input`);
-      
+      const accept = await input.evaluate((el) => (el.getAttribute('accept') || '').toLowerCase());
+      if (accept.includes('image')) {
+        imageInputs.push(input);
+      }
+    } catch {
+      // Ignore detached inputs
+    }
+  }
+
+  if (imageInputs.length > 0) {
+    console.log(`${tag} Found ${imageInputs.length} image-capable input(s) in dialog, trying direct upload...`);
+    const targetInput = imageInputs[imageInputs.length - 1];
+
+    try {
+      await targetInput.uploadFile(imagePath);
+      console.log(`${tag} ✅ Direct uploadFile() on dialog input`);
+
       await sleep(2000);
-      
-      // Check if it worked
+
       const hasFiles = await groupPage.evaluate(() => {
-        for (const input of document.querySelectorAll('input[type="file"]')) {
+        const dialog = document.querySelector('div[role="dialog"]');
+        if (!dialog) return false;
+        for (const input of dialog.querySelectorAll('input[type="file"]')) {
           if (input.files && input.files.length > 0) return true;
         }
         return false;
       });
-      
+
       if (hasFiles) {
-        console.log(`${tag} ✅ File uploaded directly`);
+        console.log(`${tag} ✅ File uploaded directly in dialog`);
         return true;
       }
     } catch (e) {
-      console.log(`${tag} ⚠️ Direct upload failed: ${e.message}`);
+      console.log(`${tag} ⚠️ Direct dialog upload failed: ${e.message}`);
     }
   }
 
