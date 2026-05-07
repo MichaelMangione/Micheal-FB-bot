@@ -589,8 +589,19 @@ async function uploadImageToComposer(groupPage, imagePath, groupIndex) {
     console.log(`${tag} ⚠️ Cannot stat file: ${e.message}`);
   }
 
-  const inputsBefore = await groupPage.$$eval('input[type="file"]', (els) => els.length);
-  console.log(`${tag} File inputs before photo click: ${inputsBefore}`);
+  const inputsBefore = await groupPage.$$eval('input[type="file"]', (els) => {
+    return els.map((el, i) => ({
+      index: i,
+      id: el.id,
+      name: el.name,
+      accept: el.accept,
+      multiple: el.multiple,
+      visible: el.offsetParent !== null,
+    }));
+  });
+  
+  console.log(`${tag} File inputs before photo click: ${inputsBefore.length}`, 
+    inputsBefore.slice(-2).map(i => `[${i.index}] ${i.name || 'unnamed'} accept=${i.accept}`).join(', '));
 
   // DIRECT APPROACH: Try to find and use file input without waiting for chooser
   const allInputsBefore = await groupPage.$$('input[type="file"]');
