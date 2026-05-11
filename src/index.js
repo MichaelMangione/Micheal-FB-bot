@@ -931,65 +931,133 @@ async function submitPost(page, { requireImage = false, imagePath = null, groupI
 
     try {
       // FIRST: Try direct Post button click via evaluate (simplest)
-      const posted = await page.evaluate(() => {
-        // First priority: exact "post" button
-        let postBtn = Array.from(document.querySelectorAll('[role="dialog"] [role="button"]')).find(btn => {
-          const aria = (btn.getAttribute('aria-label') || '').toLowerCase();
-          const text = (btn.textContent || '').toLowerCase().trim();
-          return aria === 'post' || text === 'post';
-        });
-        
-        // Fallback: any button containing "post" (handles "Post to [Group]")
-        if (!postBtn) {
-          postBtn = Array.from(document.querySelectorAll('[role="dialog"] [role="button"]')).find(btn => {
-            const aria = (btn.getAttribute('aria-label') || '').toLowerCase();
-            const text = (btn.textContent || '').toLowerCase().trim();
+      const postResult = await page.evaluate(() => {
+        function findPostButton() {
+          // First priority: exact "post" button
+          let btn = Array.from(document.querySelectorAll('[role="dialog"] [role="button"]')).find(b => {
+            const aria = (b.getAttribute('aria-label') || '').toLowerCase();
+            const text = (b.textContent || '').toLowerCase().trim();
+            return aria === 'post' || text === 'post';
+          });
+
+          if (btn) return btn;
+
+          // Fallback: any button containing "post"
+          btn = Array.from(document.querySelectorAll('[role="dialog"] [role="button"]')).find(b => {
+            const aria = (b.getAttribute('aria-label') || '').toLowerCase();
+            const text = (b.textContent || '').toLowerCase().trim();
             return aria.includes('post') || text.includes('post');
           });
-        }
-        
-        // Last resort: largest button in dialog (usually submit button)
-        if (!postBtn) {
+          if (btn) return btn;
+
+          // Last resort: largest button in dialog
           const allButtons = Array.from(document.querySelectorAll('[role="dialog"] [role="button"]'));
           if (allButtons.length > 0) {
-            postBtn = allButtons.reduce((largest, btn) => {
-              const rect1 = btn.getBoundingClientRect();
-              const rect2 = largest.getBoundingClientRect();
-              return (rect1.width * rect1.height) > (rect2.width * rect2.height) ? btn : largest;
+            return allButtons.reduce((largest, b) => {
+              const r1 = b.getBoundingClientRect();
+              const r2 = largest.getBoundingClientRect();
+              return (r1.width * r1.height) > (r2.width * r2.height) ? b : largest;
             });
           }
+          return null;
         }
-        
-        if (postBtn) {
-          postBtn.click();
-          return true;
+
+        const btn = findPostButton();
+        if (!btn) return { clicked: false };
+
+        const rect = btn.getBoundingClientRect();
+        try {
+          btn.click();
+        } catch (e) {
+          // ignore
         }
-        return false;
+        return {
+          clicked: true,
+          rect: { x: rect.left, y: rect.top, width: rect.width, height: rect.height },
+          html: (btn && btn.outerHTML) ? btn.outerHTML : null,
+        };
       });
 
-      if (posted) {
+      if (postResult && postResult.clicked) {
         console.log(`${tag} ✓ Post button clicked via evaluate`);
+        if (postResult.html) console.log(`${tag} Post button html: ${postResult.html}`);
+        // Try a mouse click at the button center as a stronger fallback
+        try {
+          const r = postResult.rect || null;
+          if (r && typeof r.x === 'number') {
+            const cx = Math.round(r.x + (r.width / 2));
+            const cy = Math.round(r.y + (r.height / 2));
+            await page.mouse.click(cx, cy, { button: 'left', clickCount: 1 });
+            console.log(`${tag} Performed mouse.click at ${cx},${cy}`);
+          }
+        } catch (mouseErr) {
+          console.warn(`${tag} Mouse click fallback failed: ${mouseErr.message}`);
+        }
+
+        // Press Enter as another fallback
+        try {
+          await page.keyboard.press('Enter');
+          console.log(`${tag} Sent Enter key as fallback`);
+        } catch { /* ignore */ }
+
       } else {
         console.log(`${tag} Post button not found in dialog`);
         await sleep(1000);
         continue;  // retry
       }
 
-      // Wait for dialog to close
+      // Wait for dialog to close (longer timeout to allow FB processing)
       console.log(`${tag} Waiting for dialog to close...`);
       let dialogClosed = false;
-      
-      for (let i = 0; i < 20; i++) {
-        await sleep(400);
-        
+      // Also collect any alert/toast text that appears during posting
+      const collectAlertText = async () => {
+        try {
+          return await page.evaluate(() => {
+            const alerts = [];
+            // role=alert
+            document.querySelectorAll('[role="alert"], [aria-live]').forEach(el => {
+              try { alerts.push(el.innerText.trim()); } catch { }
+            });
+            // common toast containers
+            document.querySelectorAll('[data-testid*="toast"], .toast, ._1f6k').forEach(el => {
+              try { const t = el.innerText && el.innerText.trim(); if (t) alerts.push(t); } catch { }
+            });
+            return alerts.filter(Boolean).slice(0,5);
+          });
+        } catch { return []; }
+      };
+
+      for (let i = 0; i < 40; i++) { // ~20s total (40 * 500ms)
+        await sleep(500);
+
         const isDialogClosed = await page.evaluate(() => {
           return !document.querySelector('[role="dialog"] [role="textbox"], [role="dialog"] div[contenteditable="true"]');
         });
-        
+
         if (isDialogClosed) {
           dialogClosed = true;
-          console.log(`${tag} ✓ Dialog closed after ${(i + 1) * 400}ms`);
+          console.log(`${tag} ✓ Dialog closed after ${(i + 1) * 500}ms`);
           break;
+        }
+
+        // Check for blocking warnings that indicate Facebook rejected the post
+        if ((i % 4) === 0) {
+          const alerts = await collectAlertText();
+          if (alerts && alerts.length) {
+            console.log(`${tag} Visible alerts/toasts: ${JSON.stringify(alerts)}`);
+            
+            // Detect blocking messages (rate limit, spam, community standards, pending approval)
+            const blockingKeywords = ['limit', 'spam', 'community standards', 'pending', 'admin approval', 'try again later', 'not allowed'];
+            const hasBlockingMessage = alerts.some(alert => 
+              blockingKeywords.some(keyword => alert.toLowerCase().includes(keyword))
+            );
+            
+            if (hasBlockingMessage) {
+              console.log(`${tag} ❌ BLOCKING WARNING DETECTED: ${alerts.join(' | ')}`);
+              console.log(`${tag} Facebook rejected post. Not retrying.`);
+              throw new Error(`Post rejected by Facebook: ${alerts[0]}`);
+            }
+          }
         }
       }
 
@@ -1008,6 +1076,22 @@ async function submitPost(page, { requireImage = false, imagePath = null, groupI
           return true;
         } else {
           console.log(`${tag} ⚠️ Composer still visible after dialog close - may not have submitted`);
+          // Save debug artifacts for this failed submit attempt
+          try {
+            const logsDir = path.join(process.cwd(), 'run_logs');
+            if (!fs.existsSync(logsDir)) fs.mkdirSync(logsDir, { recursive: true });
+            const stamp = Date.now();
+            const imgPath = path.join(logsDir, `submit-fail-${groupIndex || 'unknown'}-${attempt}-${stamp}.png`);
+            const htmlPath = path.join(logsDir, `submit-fail-${groupIndex || 'unknown'}-${attempt}-${stamp}.html`);
+            await page.screenshot({ path: imgPath, fullPage: true });
+            const html = await page.content();
+            fs.writeFileSync(htmlPath, html, 'utf8');
+            const alerts = await collectAlertText();
+            console.log(`${tag} Saved submit debug: ${imgPath}, ${htmlPath}, alerts=${JSON.stringify(alerts)}`);
+          } catch (saveErr) {
+            console.warn(`${tag} Failed to save submit debug artifacts: ${saveErr.message}`);
+          }
+
           await sleep(2000);
           continue;  // Retry
         }
@@ -1329,6 +1413,24 @@ async function main() {
           if (String(err.message || '').toLowerCase().includes('connection closed')) {
             throw err;
           }
+
+          // Capture a screenshot and page HTML for debugging when a post fails
+          try {
+            const logsDir = path.join(process.cwd(), 'run_logs');
+            if (!fs.existsSync(logsDir)) fs.mkdirSync(logsDir, { recursive: true });
+            if (groupPage && typeof groupPage.screenshot === 'function') {
+              const stamp = Date.now();
+              const imgPath = path.join(logsDir, `group-${i + 1}-${stamp}.png`);
+              const htmlPath = path.join(logsDir, `group-${i + 1}-${stamp}.html`);
+              await groupPage.screenshot({ path: imgPath, fullPage: true });
+              const html = await groupPage.content();
+              fs.writeFileSync(htmlPath, html, 'utf8');
+              console.log(`[group ${i + 1}] Saved debug files: ${imgPath}, ${htmlPath}`);
+            }
+          } catch (saveErr) {
+            console.warn(`[group ${i + 1}] Failed to save debug artifacts: ${saveErr.message}`);
+          }
+
           console.log(`[group ${i + 1}] Skipping and continuing...`);
 
           if (!isLast) {
