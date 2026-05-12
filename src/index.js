@@ -846,24 +846,63 @@ async function uploadImageToComposer(groupPage, imagePath, groupIndex) {
     // Wait for the input to process the file
     await sleep(2000);
 
-    // Verify the file was accepted by the input
-    const hasFileValue = await groupPage.evaluate(() => {
-      for (const input of document.querySelectorAll('input[type="file"]')) {
-        if (input.files && input.files.length > 0) {
-          console.log('[upload-debug] Found file in input, length:', input.files.length);
-          return true;
-        }
+    // Verify the file was accepted by the input or that a visible preview appeared
+    const waitForPreview = async (timeout = 8000) => {
+      const start = Date.now();
+      while (Date.now() - start < timeout) {
+        // Check for common preview indicators
+        const found = await groupPage.evaluate(() => {
+          try {
+            const dialog = document.querySelector('div[role="dialog"]') || document;
+            // inline blob/data images
+            if (dialog.querySelector('img[src*="blob:"]') || dialog.querySelector('img[src*="data:"]')) return true;
+            // edit/remove controls
+            if (dialog.querySelector('[aria-label*="Remove photo" i]') || dialog.querySelector('[aria-label*="Edit photo" i]')) return true;
+            if (dialog.querySelector('[data-testid*="photo"]')) return true;
+            // some previews are rendered as background-image on a div
+            const divs = Array.from(dialog.querySelectorAll('div'));
+            for (const d of divs) {
+              const bg = window.getComputedStyle(d).getPropertyValue('background-image') || '';
+              if (bg && (bg.includes('blob:') || bg.includes('data:image'))) return true;
+            }
+            // fallback: check file inputs for files
+            for (const input of dialog.querySelectorAll('input[type="file"]')) {
+              if (input.files && input.files.length > 0) return true;
+            }
+            return false;
+          } catch (e) { return false; }
+        });
+        if (found) return true;
+        await sleep(500);
       }
-      console.log('[upload-debug] No files in any input');
       return false;
-    });
+    };
 
-    if (hasFileValue) {
-      console.log(`${tag} ✅ Image file accepted by input element`);
-      await sleep(2000); // Brief pause for preview to start rendering
+    const previewAppeared = await waitForPreview(8000);
+    if (previewAppeared) {
+      console.log(`${tag} ✅ Image preview detected after upload`);
+      await sleep(1200);
       return true;
     }
-    
+
+    // If preview didn't appear, try uploading to other available inputs (sometimes last input isn't the active one)
+    console.log(`${tag} ⚠️ No preview detected, will retry upload to other file inputs if available`);
+    const allFileInputs = await groupPage.$$('input[type="file"]');
+    for (let i = 0; i < allFileInputs.length; i++) {
+      try {
+        console.log(`${tag} Trying uploadFile() on input index ${i + 1}/${allFileInputs.length}`);
+        await allFileInputs[i].uploadFile(imagePath);
+        const ok = await waitForPreview(6000);
+        if (ok) {
+          console.log(`${tag} ✅ Preview detected after retrying input ${i + 1}`);
+          await sleep(1000);
+          return true;
+        }
+      } catch (e) {
+        console.log(`${tag} ⚠️ uploadFile() on input ${i + 1} failed: ${e.message}`);
+      }
+    }
+
     // If standard methods failed, try base64 injection (for headless/restricted environments)
     console.log(`${tag} ⚠️ Standard upload failed, trying base64 injection...`);
     const fileBuffer = fs.readFileSync(imagePath);
