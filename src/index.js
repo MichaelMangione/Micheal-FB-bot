@@ -636,41 +636,53 @@ async function uploadImageToComposer(groupPage, imagePath, groupIndex) {
       try {
         await targetInput.uploadFile(imagePath);
         console.log(`${tag} ✅ Direct uploadFile() on dialog input #${index + 1}`);
-        uploadSucceeded = true;
 
-        await sleep(2000);
+        // Wait longer for preview to render
+        await sleep(3000);
 
         const hasFiles = await groupPage.evaluate(() => {
           const dialog = document.querySelector('div[role="dialog"]');
-          if (!dialog) return false;
+          if (!dialog) return { verified: false, reason: 'no-dialog' };
+          
+          // Check for files in input
           for (const input of dialog.querySelectorAll('input[type="file"]')) {
-            if (input.files && input.files.length > 0) return true;
+            if (input.files && input.files.length > 0) {
+              return { verified: true, reason: 'input-files' };
+            }
           }
-          return !!(
-            dialog.querySelector('img[src*="blob:"]') ||
-            dialog.querySelector('img[src*="data:"]') ||
-            dialog.querySelector('[aria-label*="Remove photo" i]') ||
-            dialog.querySelector('[aria-label*="Edit photo" i]') ||
-            dialog.querySelector('[data-testid*="photo"]')
-          );
+          
+          // Check for image preview elements
+          const imgSrc = dialog.querySelector('img[src*="blob:"], img[src*="data:"]');
+          if (imgSrc) return { verified: true, reason: 'blob-image' };
+          
+          // Check for photo controls
+          const removeBtn = dialog.querySelector('[aria-label*="Remove photo" i], [aria-label*="Edit photo" i]');
+          if (removeBtn) return { verified: true, reason: 'photo-control' };
+          
+          // Check for data-testid photo element
+          const dataPhoto = dialog.querySelector('[data-testid*="photo"]');
+          if (dataPhoto) return { verified: true, reason: 'data-testid' };
+          
+          return { verified: false, reason: 'no-preview' };
         });
 
-        if (hasFiles) {
-          console.log(`${tag} ✅ File uploaded directly in dialog`);
+        if (hasFiles.verified) {
+          console.log(`${tag} ✅ File uploaded directly in dialog (${hasFiles.reason})`);
+          uploadSucceeded = true;
           return true;
+        } else {
+          console.log(`${tag} ⚠️ Direct upload reported success but no preview found (${hasFiles.reason}), trying fallback...`);
+          // Continue to try file chooser
         }
-        // Even if hasFiles check failed, direct upload likely succeeded in headless
-        console.log(`${tag} ✅ Direct upload completed (assuming success in headless mode)`);
-        return true;
       } catch (e) {
         console.log(`${tag} ⚠️ Direct dialog upload failed for input #${index + 1}: ${e.message}`);
       }
     }
   }
 
-  // Skip file chooser if direct upload already succeeded
+  // Only skip file chooser if direct upload actually succeeded AND preview was verified
   if (uploadSucceeded) {
-    console.log(`${tag} ℹ️ Skipping file chooser (direct upload already completed)`);
+    console.log(`${tag} ℹ️ Skipping file chooser (direct upload already verified)`);
     return true;
   }
 
@@ -979,6 +991,44 @@ async function submitPost(page, { requireImage = false, imagePath = null, groupI
   for (let attempt = 1; attempt <= 3; attempt++) {
     console.log(`${tag} Submit attempt ${attempt}/3...`);
     
+    // DEBUG: Capture composer state before submit
+    if (attempt === 1) {
+      try {
+        const composerState = await page.evaluate(() => {
+          const dialog = document.querySelector('[role="dialog"]');
+          if (!dialog) return { error: 'No dialog found' };
+          
+          // Check for images
+          const imgs = dialog.querySelectorAll('img[src*="blob:"], img[src*="data:"]');
+          const hasPreview = !!dialog.querySelector('[aria-label*="Remove photo" i], [aria-label*="Edit photo" i], [data-testid*="photo"]');
+          
+          // Check Post button state
+          const postBtn = Array.from(dialog.querySelectorAll('[role="button"]')).find(b => 
+            (b.getAttribute('aria-label') || '').toLowerCase() === 'post'
+          );
+          const postBtnDisabled = postBtn ? postBtn.getAttribute('aria-disabled') === 'true' : null;
+          const postBtnOpacity = postBtn ? window.getComputedStyle(postBtn).opacity : null;
+          
+          // Check for any validation errors or alerts
+          const errorText = dialog.querySelector('[role="alert"]')?.textContent || '';
+          const toastText = document.querySelector('[data-testid*="toast"]')?.textContent || '';
+          
+          return {
+            previewImages: imgs.length,
+            hasPhotoControl: hasPreview,
+            postBtnFound: !!postBtn,
+            postBtnDisabled,
+            postBtnOpacity,
+            errorText: errorText.slice(0, 100),
+            toastText: toastText.slice(0, 100),
+          };
+        });
+        console.log(`${tag} Composer state: ${JSON.stringify(composerState)}`);
+      } catch (e) {
+        console.warn(`${tag} Failed to capture composer state: ${e.message}`);
+      }
+    }
+    
     // Check image is still there
     if (requireImage) {
       const hasImg = await hasComposerImage(page);
@@ -1088,13 +1138,31 @@ async function submitPost(page, { requireImage = false, imagePath = null, groupI
       for (let i = 0; i < 40; i++) { // ~20s total (40 * 500ms)
         await sleep(500);
 
-        const isDialogClosed = await page.evaluate(() => {
-          return !document.querySelector('[role="dialog"] [role="textbox"], [role="dialog"] div[contenteditable="true"]');
+        const dialogState = await page.evaluate(() => {
+          const dialog = document.querySelector('[role="dialog"]');
+          const hasComposerInputs = !!document.querySelector('[role="dialog"] [role="textbox"], [role="dialog"] div[contenteditable="true"]');
+          const isVisible = dialog ? dialog.offsetParent !== null : false;
+          const hasSuccessToast = !!document.evaluate(
+            "//*[contains(text(), 'posted') or contains(text(), 'Published') or contains(text(), 'posted to')]",
+            document,
+            null,
+            XPathResult.FIRST_ORDERED_NODE_TYPE,
+            null
+          ).singleNodeValue;
+          
+          return {
+            dialogExists: !!dialog,
+            isVisible,
+            hasComposerInputs,
+            hasSuccessToast,
+          };
         });
 
-        if (isDialogClosed) {
+        const isDialogClosed = !dialogState.dialogExists || !dialogState.isVisible || (!dialogState.hasComposerInputs && (i > 4));
+
+        if (isDialogClosed || dialogState.hasSuccessToast) {
           dialogClosed = true;
-          console.log(`${tag} ✓ Dialog closed after ${(i + 1) * 500}ms`);
+          console.log(`${tag} ✓ Dialog closed after ${(i + 1) * 500}ms (state: ${JSON.stringify(dialogState)})`);
           break;
         }
 
