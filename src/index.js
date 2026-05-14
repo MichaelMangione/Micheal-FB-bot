@@ -991,6 +991,21 @@ async function submitPost(page, { requireImage = false, imagePath = null, groupI
   for (let attempt = 1; attempt <= 3; attempt++) {
     console.log(`${tag} Submit attempt ${attempt}/3...`);
     
+    // CRITICAL: Wait for photo controls to appear (indicates image upload is complete)
+    if (requireImage && attempt === 1) {
+      try {
+        await page.waitForFunction(() => {
+          const dialog = document.querySelector('[role="dialog"]');
+          if (!dialog) return false;
+          // Wait for either Remove Photo button or Edit Photo button
+          return !!dialog.querySelector('[aria-label*="Remove photo" i], [aria-label*="Edit photo" i]');
+        }, { timeout: 5000 });
+        console.log(`${tag} ✓ Photo controls appeared (image upload complete)`);
+      } catch {
+        console.warn(`${tag} ⚠️ Photo controls timeout — image may not be fully processed, proceeding anyway...`);
+      }
+    }
+    
     // DEBUG: Capture composer state before submit
     if (attempt === 1) {
       try {
@@ -1140,27 +1155,33 @@ async function submitPost(page, { requireImage = false, imagePath = null, groupI
 
         const dialogState = await page.evaluate(() => {
           const dialog = document.querySelector('[role="dialog"]');
-          const hasComposerInputs = !!document.querySelector('[role="dialog"] [role="textbox"], [role="dialog"] div[contenteditable="true"]');
-          const isVisible = dialog ? dialog.offsetParent !== null : false;
-          const hasSuccessToast = !!document.evaluate(
-            "//*[contains(text(), 'posted') or contains(text(), 'Published') or contains(text(), 'posted to')]",
-            document,
-            null,
-            XPathResult.FIRST_ORDERED_NODE_TYPE,
-            null
-          ).singleNodeValue;
+          
+          if (!dialog) {
+            // Dialog element completely gone — this is TRUE closure
+            return {
+              dialogExists: false,
+              isVisible: false,
+              hasComposerInputs: false,
+              isClosed: true,
+            };
+          }
+          
+          const isVisible = dialog.offsetParent !== null;
+          const hasComposerInputs = !!dialog.querySelector('[role="textbox"], div[contenteditable="true"]');
+          
+          // Don't use text-based success detection — it's unreliable
+          // Instead, check if dialog is actually gone
+          const isClosed = !isVisible || !hasComposerInputs;
           
           return {
-            dialogExists: !!dialog,
+            dialogExists: true,
             isVisible,
             hasComposerInputs,
-            hasSuccessToast,
+            isClosed,
           };
         });
 
-        const isDialogClosed = !dialogState.dialogExists || !dialogState.isVisible || (!dialogState.hasComposerInputs && (i > 4));
-
-        if (isDialogClosed || dialogState.hasSuccessToast) {
+        if (dialogState.isClosed) {
           dialogClosed = true;
           console.log(`${tag} ✓ Dialog closed after ${(i + 1) * 500}ms (state: ${JSON.stringify(dialogState)})`);
           break;
