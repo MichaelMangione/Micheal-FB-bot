@@ -560,15 +560,47 @@ async function waitForImageUploadToSettle(page, groupIndex) {
     await page.waitForFunction(() => {
       const dialog = document.querySelector('[role="dialog"]');
       if (!dialog) return true;
+      
+      // Check for loading/processing indicators
       const busy =
         !!dialog.querySelector('[aria-label*="Uploading" i]') ||
         !!dialog.querySelector('[aria-label*="Processing" i]') ||
-        !!dialog.querySelector('[role="progressbar"]');
-      return !busy;
-    }, { timeout: 12000 });
+        !!dialog.querySelector('[aria-label*="Loading" i]') ||
+        !!dialog.querySelector('[role="progressbar"]') ||
+        !!dialog.querySelector('[aria-busy="true"]');
+      
+      // Check for image presence indicators
+      const hasImage =
+        !!dialog.querySelector('img[src*="blob:"]') ||
+        !!dialog.querySelector('img[src*="data:"]') ||
+        !!dialog.querySelector('[data-testid*="photo"]') ||
+        !!dialog.querySelector('[aria-label*="photo" i]') ||
+        !!dialog.querySelector('[aria-label*="Remove" i]') ||
+        !!dialog.querySelector('[aria-label*="Edit" i]');
+      
+      return !busy && hasImage;
+    }, { timeout: 15000 });
     console.log(`${tag} ✅ Image upload settled`);
   } catch {
-    console.log(`${tag} ⚠️ Image settling timeout; proceeding`);
+    console.log(`${tag} ⚠️ Image settling timeout (15s); checking state...`);
+    // Log what we found for diagnostics
+    try {
+      const state = await page.evaluate(() => {
+        const dialog = document.querySelector('[role="dialog"]');
+        if (!dialog) return 'no-dialog';
+        const imgCount = dialog.querySelectorAll('img[src*="blob:"], img[src*="data:"]').length;
+        const hasControl = !!dialog.querySelector('[aria-label*="Remove" i], [aria-label*="Edit" i]');
+        const busyIndicators = [
+          dialog.querySelector('[aria-busy="true"]') ? 'busy' : null,
+          dialog.querySelector('[role="progressbar"]') ? 'progressbar' : null,
+          dialog.querySelector('[aria-label*="Uploading" i]') ? 'uploading' : null,
+        ].filter(Boolean).join(',');
+        return { imgCount, hasControl, busy: busyIndicators || 'none' };
+      });
+      console.log(`${tag} Settlement state: ${JSON.stringify(state)}`);
+    } catch (e) {
+      console.warn(`${tag} Failed to log settlement state: ${e.message}`);
+    }
   }
 }
 
@@ -993,16 +1025,43 @@ async function submitPost(page, { requireImage = false, imagePath = null, groupI
     
     // CRITICAL: Wait for photo controls to appear (indicates image upload is complete)
     if (requireImage && attempt === 1) {
-      try {
-        await page.waitForFunction(() => {
-          const dialog = document.querySelector('[role="dialog"]');
-          if (!dialog) return false;
-          // Wait for either Remove Photo button or Edit Photo button
-          return !!dialog.querySelector('[aria-label*="Remove photo" i], [aria-label*="Edit photo" i]');
-        }, { timeout: 5000 });
-        console.log(`${tag} ✓ Photo controls appeared (image upload complete)`);
-      } catch {
-        console.warn(`${tag} ⚠️ Photo controls timeout — image may not be fully processed, proceeding anyway...`);
+      let photoReady = false;
+      let waitAttempts = 0;
+      
+      while (!photoReady && waitAttempts < 10) {
+        try {
+          photoReady = await page.waitForFunction(() => {
+            const dialog = document.querySelector('[role="dialog"]');
+            if (!dialog) return false;
+            
+            // Check for photo control buttons
+            const hasPhotoBtn = !!dialog.querySelector('[aria-label*="Remove photo" i], [aria-label*="Edit photo" i]');
+            
+            // Check for file in input (more direct check)
+            const hasFileInInput = Array.from(dialog.querySelectorAll('input[type="file"]')).some(input => 
+              input.files && input.files.length > 0
+            );
+            
+            // Check for any image preview element
+            const hasImagePreview = !!dialog.querySelector('img[src*="blob:"], img[src*="data:"], [data-testid*="photo"]');
+            
+            return hasPhotoBtn || hasFileInInput || hasImagePreview;
+          }, { timeout: 2000 });
+          
+          if (photoReady) {
+            console.log(`${tag} ✓ Image ready for submission`);
+            break;
+          }
+        } catch {
+          waitAttempts++;
+          if (waitAttempts < 10) {
+            await sleep(1000);
+          }
+        }
+      }
+      
+      if (!photoReady) {
+        console.warn(`${tag} ⚠️ Photo controls/image not ready after 20s — may cause submit to fail`);
       }
     }
     
@@ -1017,6 +1076,11 @@ async function submitPost(page, { requireImage = false, imagePath = null, groupI
           const imgs = dialog.querySelectorAll('img[src*="blob:"], img[src*="data:"]');
           const hasPreview = !!dialog.querySelector('[aria-label*="Remove photo" i], [aria-label*="Edit photo" i], [data-testid*="photo"]');
           
+          // Check files in inputs
+          const filesInInputs = Array.from(dialog.querySelectorAll('input[type="file"]')).reduce((sum, input) => 
+            sum + (input.files?.length || 0), 0
+          );
+          
           // Check Post button state
           const postBtn = Array.from(dialog.querySelectorAll('[role="button"]')).find(b => 
             (b.getAttribute('aria-label') || '').toLowerCase() === 'post'
@@ -1030,6 +1094,7 @@ async function submitPost(page, { requireImage = false, imagePath = null, groupI
           
           return {
             previewImages: imgs.length,
+            filesInInputs,
             hasPhotoControl: hasPreview,
             postBtnFound: !!postBtn,
             postBtnDisabled,
