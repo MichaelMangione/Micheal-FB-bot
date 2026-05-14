@@ -1023,45 +1023,48 @@ async function submitPost(page, { requireImage = false, imagePath = null, groupI
   for (let attempt = 1; attempt <= 3; attempt++) {
     console.log(`${tag} Submit attempt ${attempt}/3...`);
     
-    // CRITICAL: Wait for photo controls to appear (indicates image upload is complete)
+    // CRITICAL: Wait for image preview to appear (indicates upload is processing)
     if (requireImage && attempt === 1) {
-      let photoReady = false;
+      let imageReady = false;
       let waitAttempts = 0;
       
-      while (!photoReady && waitAttempts < 10) {
+      while (!imageReady && waitAttempts < 15) {
         try {
-          photoReady = await page.waitForFunction(() => {
+          imageReady = await page.waitForFunction(() => {
             const dialog = document.querySelector('[role="dialog"]');
             if (!dialog) return false;
             
-            // Check for photo control buttons
-            const hasPhotoBtn = !!dialog.querySelector('[aria-label*="Remove photo" i], [aria-label*="Edit photo" i]');
+            // Check for blob/data image (most reliable)
+            const hasBlob = !!dialog.querySelector('img[src*="blob:"], img[src*="data:"]');
+            if (hasBlob) return true;
             
-            // Check for file in input (more direct check)
+            // Check for photo controls (but may not appear in all FB versions)
+            const hasPhotoBtn = !!dialog.querySelector('[aria-label*="Remove photo" i], [aria-label*="Edit photo" i]');
+            if (hasPhotoBtn) return true;
+            
+            // Check for file in input
             const hasFileInInput = Array.from(dialog.querySelectorAll('input[type="file"]')).some(input => 
               input.files && input.files.length > 0
             );
+            if (hasFileInInput) return true;
             
-            // Check for any image preview element
-            const hasImagePreview = !!dialog.querySelector('img[src*="blob:"], img[src*="data:"], [data-testid*="photo"]');
-            
-            return hasPhotoBtn || hasFileInInput || hasImagePreview;
-          }, { timeout: 2000 });
+            return false;
+          }, { timeout: 1500 });
           
-          if (photoReady) {
-            console.log(`${tag} ✓ Image ready for submission`);
+          if (imageReady) {
+            console.log(`${tag} ✓ Image preview detected (ready for submit)`);
             break;
           }
         } catch {
           waitAttempts++;
-          if (waitAttempts < 10) {
-            await sleep(1000);
+          if (waitAttempts < 15) {
+            await sleep(800);
           }
         }
       }
       
-      if (!photoReady) {
-        console.warn(`${tag} ⚠️ Photo controls/image not ready after 20s — may cause submit to fail`);
+      if (!imageReady) {
+        console.warn(`${tag} ⚠️ Image preview not detected after 20s — post may fail`);
       }
     }
     
@@ -1169,23 +1172,49 @@ async function submitPost(page, { requireImage = false, imagePath = null, groupI
       if (postResult && postResult.clicked) {
         console.log(`${tag} ✓ Post button clicked via evaluate`);
         if (postResult.html) console.log(`${tag} Post button html: ${postResult.html}`);
-        // Try a mouse click at the button center as a stronger fallback
+        
+        // Try multiple click methods to ensure the button registers
         try {
           const r = postResult.rect || null;
           if (r && typeof r.x === 'number') {
             const cx = Math.round(r.x + (r.width / 2));
             const cy = Math.round(r.y + (r.height / 2));
+            
+            // Method 1: Single mouse click
             await page.mouse.click(cx, cy, { button: 'left', clickCount: 1 });
             console.log(`${tag} Performed mouse.click at ${cx},${cy}`);
+            await sleep(200);
+            
+            // Method 2: Double-click as stronger fallback
+            await page.mouse.click(cx, cy, { button: 'left', clickCount: 2 });
+            console.log(`${tag} Performed double-click at ${cx},${cy}`);
+            await sleep(200);
           }
         } catch (mouseErr) {
-          console.warn(`${tag} Mouse click fallback failed: ${mouseErr.message}`);
+          console.warn(`${tag} Mouse click methods failed: ${mouseErr.message}`);
         }
 
-        // Press Enter as another fallback
+        // Method 3: Focus and press Enter
+        try {
+          await page.evaluate(() => {
+            const btn = Array.from(document.querySelectorAll('[role="dialog"] [role="button"]')).find(b =>
+              (b.getAttribute('aria-label') || '').toLowerCase() === 'post'
+            );
+            if (btn) {
+              btn.focus();
+              const enterEvent = new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', bubbles: true });
+              btn.dispatchEvent(enterEvent);
+            }
+          });
+          console.log(`${tag} Sent focused Enter keystroke`);
+        } catch (keyErr) {
+          console.warn(`${tag} Keyboard method failed: ${keyErr.message}`);
+        }
+
+        // Method 4: Regular Enter key
         try {
           await page.keyboard.press('Enter');
-          console.log(`${tag} Sent Enter key as fallback`);
+          console.log(`${tag} Sent generic Enter key`);
         } catch { /* ignore */ }
 
       } else {
@@ -1259,7 +1288,7 @@ async function submitPost(page, { requireImage = false, imagePath = null, groupI
             console.log(`${tag} Visible alerts/toasts: ${JSON.stringify(alerts)}`);
             
             // Detect blocking messages (rate limit, spam, community standards, pending approval)
-            const blockingKeywords = ['limit', 'spam', 'community standards', 'pending', 'admin approval', 'try again later', 'not allowed'];
+            const blockingKeywords = ['limit', 'spam', 'community standards', 'pending', 'admin approval', 'try again later', 'not allowed', 'not posted', 'not able', 'cannot post'];
             const hasBlockingMessage = alerts.some(alert => 
               blockingKeywords.some(keyword => alert.toLowerCase().includes(keyword))
             );
@@ -1269,6 +1298,24 @@ async function submitPost(page, { requireImage = false, imagePath = null, groupI
               console.log(`${tag} Facebook rejected post. Not retrying.`);
               throw new Error(`Post rejected by Facebook: ${alerts[0]}`);
             }
+          }
+          
+          // Also check for error modals (for pre-FB version compatibility)
+          try {
+            const errorModal = await page.evaluate(() => {
+              const alert = document.querySelector('[role="alertdialog"]');
+              if (!alert) return null;
+              return alert.textContent.slice(0, 200);
+            });
+            if (errorModal) {
+              console.log(`${tag} ⚠️ Found error modal: ${errorModal}`);
+              const keywords = ['not posted', 'cannot post', 'failed', 'error', 'not able'];
+              if (keywords.some(k => errorModal.toLowerCase().includes(k))) {
+                throw new Error(`Error modal detected: ${errorModal}`);
+              }
+            }
+          } catch (e) {
+            if (e.message.includes('Error modal')) throw e;
           }
         }
       }
