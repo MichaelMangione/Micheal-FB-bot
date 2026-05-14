@@ -1631,7 +1631,9 @@ async function main() {
             endTimer(`Group ${i + 1} image upload`);
             if (!uploaded) {
               console.warn(`[group ${i + 1}] ⚠️ Initial image upload did not confirm preview`);
-              await ensureComposerHasImage(groupPage, selectedImagePath, i + 1);
+              // Fallback: don't block the whole post run on image failures — post text-only
+              console.log(`[group ${i + 1}] ℹ️ Falling back to text-only post (image upload failed)`);
+              selectedImagePath = null;
             } else {
               console.log(`[group ${i + 1}] ✅ Image upload accepted`);
             }
