@@ -8,6 +8,8 @@ import {
   FB_EMAIL,
   FB_PASSWORD,
   HEADLESS,
+  MORNING_PENDING_CLEANUP_ENABLED,
+  MORNING_PENDING_CLEANUP_HOUR,
   POST_IMAGE_DIR,
   PAUSE_AFTER_COMPOSE_MS,
   RESET_POSTS,
@@ -27,6 +29,7 @@ import {
   loadPosts,
   loadScheduleConfig,
   loadPostingState,
+  savePostingState,
   canPostAccordingToLimit,
   getNextPost,
   updateStateAfterPost,
@@ -1387,6 +1390,195 @@ async function navigateToGroupWithRetry(page, url, groupIndex) {
   }
 }
 
+function getLocalDateKey(now = new Date()) {
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, '0');
+  const day = String(now.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function shouldRunMorningCleanup(state) {
+  if (!MORNING_PENDING_CLEANUP_ENABLED || !state) return false;
+  const now = new Date();
+  if (now.getHours() < MORNING_PENDING_CLEANUP_HOUR) return false;
+  const today = getLocalDateKey(now);
+  return state.lastPendingCleanupDate !== today;
+}
+
+async function openPendingPostsView(page, groupUrl, groupIndex) {
+  const tag = `[cleanup group ${groupIndex}]`;
+  const normalized = groupUrl.replace(/\/$/, '');
+  const candidates = [
+    `${normalized}/pending_posts`,
+    `${normalized}?sorting_setting=PENDING_POSTS`,
+  ];
+
+  for (const url of candidates) {
+    try {
+      await navigateToGroupWithRetry(page, url, groupIndex);
+      await sleep(1500);
+      const looksRight = await page.evaluate(() => {
+        const text = (document.body?.innerText || '').toLowerCase();
+        return text.includes('pending post') || text.includes('pending posts') || text.includes('pending');
+      });
+      if (looksRight || page.url().toLowerCase().includes('pending')) {
+        console.log(`${tag} Opened pending view: ${url}`);
+        return true;
+      }
+    } catch {
+      // Try next variant.
+    }
+  }
+
+  await navigateToGroupWithRetry(page, groupUrl, groupIndex);
+  await sleep(1500);
+
+  const clickedPendingTab = await page.evaluate(() => {
+    const clickable = Array.from(document.querySelectorAll('a, button, [role="tab"], [role="button"]'));
+    const isVisible = (el) => {
+      const rect = el.getBoundingClientRect();
+      return rect.width > 10 && rect.height > 10 && rect.bottom > 0 && rect.top < window.innerHeight;
+    };
+    for (const el of clickable) {
+      const text = (el.textContent || '').toLowerCase();
+      const aria = (el.getAttribute('aria-label') || '').toLowerCase();
+      if ((text.includes('pending') || aria.includes('pending')) && isVisible(el)) {
+        el.click();
+        return true;
+      }
+    }
+    return false;
+  });
+
+  if (clickedPendingTab) {
+    await sleep(1500);
+    console.log(`${tag} Opened pending view via in-page tab/button`);
+    return true;
+  }
+
+  console.log(`${tag} Pending view not found (may not have pending posts or permissions).`);
+  return false;
+}
+
+async function clickDeletePendingAction(page) {
+  return page.evaluate(() => {
+    const candidates = Array.from(document.querySelectorAll('button, [role="button"], a[role="button"]'));
+    const isVisible = (el) => {
+      const rect = el.getBoundingClientRect();
+      return rect.width > 12 && rect.height > 12 && rect.bottom > 0 && rect.top < window.innerHeight;
+    };
+
+    const isAction = (text) => {
+      const t = text.toLowerCase();
+      return (
+        t.includes('delete post') ||
+        t.includes('remove post') ||
+        t.includes('cancel post') ||
+        t.includes('delete request') ||
+        t.includes('cancel request')
+      );
+    };
+
+    for (const el of candidates) {
+      const text = (el.textContent || '').trim();
+      const aria = (el.getAttribute('aria-label') || '').trim();
+      const joined = `${text} ${aria}`.trim();
+      if (joined && isAction(joined) && isVisible(el)) {
+        el.click();
+        return joined;
+      }
+    }
+    return '';
+  });
+}
+
+async function clickDeleteConfirmation(page) {
+  return page.evaluate(() => {
+    const options = Array.from(document.querySelectorAll('button, [role="button"]'));
+    const isVisible = (el) => {
+      const rect = el.getBoundingClientRect();
+      return rect.width > 12 && rect.height > 12 && rect.bottom > 0 && rect.top < window.innerHeight;
+    };
+
+    const confirmWords = ['delete', 'remove', 'confirm', 'yes'];
+    for (const el of options) {
+      const text = (el.textContent || '').toLowerCase().trim();
+      const aria = (el.getAttribute('aria-label') || '').toLowerCase().trim();
+      const joined = `${text} ${aria}`.trim();
+      if (!joined || !isVisible(el)) continue;
+
+      if (confirmWords.some((w) => joined === w || joined.startsWith(`${w} `) || joined.includes(` ${w}`))) {
+        if (!joined.includes('edit') && !joined.includes('view') && !joined.includes('copy')) {
+          el.click();
+          return joined;
+        }
+      }
+    }
+    return '';
+  });
+}
+
+async function deletePendingPostsInGroup(page, groupIndex) {
+  const tag = `[cleanup group ${groupIndex}]`;
+  let removed = 0;
+
+  for (let i = 0; i < 40; i++) {
+    const actionClicked = await clickDeletePendingAction(page);
+    if (!actionClicked) break;
+
+    await sleep(800);
+    const confirmClicked = await clickDeleteConfirmation(page);
+    if (confirmClicked) {
+      console.log(`${tag} Confirmed delete: ${confirmClicked}`);
+    }
+
+    removed += 1;
+    await sleep(1200);
+  }
+
+  console.log(`${tag} Removed ${removed} pending post(s).`);
+  return removed;
+}
+
+async function runMorningPendingCleanup(browser) {
+  console.log('\n[cleanup] Starting pending-post cleanup across groups...');
+  let totalRemoved = 0;
+
+  for (let i = 0; i < TARGET_GROUP_URLS.length; i++) {
+    const groupUrl = TARGET_GROUP_URLS[i];
+    const groupIndex = i + 1;
+    let page = null;
+
+    try {
+      page = await browser.newPage();
+      await page.setUserAgent(USER_AGENT);
+
+      const stored = await loadSessionFromDisk();
+      if (stored?.length) {
+        try { await page.setCookie(...stored); }
+        catch (err) { console.warn('[cleanup] Cookie apply warning:', err.message); }
+      }
+
+      await navigateToGroupWithRetry(page, groupUrl, groupIndex);
+      await autoLoginIfNeeded(page);
+      await resolveCaptchasUntilClear(page, CAPTCHA_API_KEY);
+
+      const opened = await openPendingPostsView(page, groupUrl, groupIndex);
+      if (!opened) continue;
+
+      totalRemoved += await deletePendingPostsInGroup(page, groupIndex);
+    } catch (err) {
+      console.warn(`[cleanup group ${groupIndex}] Failed: ${err.message}`);
+    } finally {
+      if (page) {
+        try { await page.close(); } catch { /* ignore */ }
+      }
+    }
+  }
+
+  console.log(`[cleanup] Completed. Total pending posts removed: ${totalRemoved}`);
+}
+
 // ── Main ──────────────────────────────────────────────────────────────────────
 async function main() {
   validateConfig();
@@ -1405,7 +1597,7 @@ async function main() {
   const scheduleConfig = loadScheduleConfig();
   const schedulingEnabled = scheduleConfig.scheduling.enabled;
   const posts = schedulingEnabled ? loadPosts() : [];
-  const state = schedulingEnabled ? loadPostingState() : null;
+  const state = (schedulingEnabled || MORNING_PENDING_CLEANUP_ENABLED) ? loadPostingState() : null;
 
   let postsToPost = [];
   if (schedulingEnabled && posts.length > 0) {
@@ -1498,6 +1690,17 @@ async function main() {
   const cookies = await collectFacebookCookies(page);
   await saveSessionCookies(cookies);
   console.log('[session] Cookies saved to session.json');
+
+  if (shouldRunMorningCleanup(state)) {
+    console.log(
+      `[cleanup] Morning cleanup due (hour >= ${MORNING_PENDING_CLEANUP_HOUR}). Running now before posting...`
+    );
+    await runMorningPendingCleanup(browser);
+    state.lastPendingCleanupDate = getLocalDateKey();
+    savePostingState(state);
+    console.log(`[cleanup] Marked complete for ${state.lastPendingCleanupDate}.`);
+  }
+
   console.log(`[multi-group] Posting to ${TARGET_GROUP_URLS.length} group(s).`);
 
   const postStartTime = Date.now();

@@ -57,6 +57,16 @@ export const PAUSE_AFTER_COMPOSE_MS = Math.max(
 /** When true, resets posting state to start from post 1 (ignores .posting-state.json). */
 export const RESET_POSTS = String(process.env.RESET_POSTS ?? 'false').toLowerCase() === 'true';
 
+/** Run pending-post cleanup once per local day after this hour (0-23). */
+export const MORNING_PENDING_CLEANUP_HOUR = Math.min(
+  23,
+  Math.max(0, Number.parseInt(process.env.MORNING_PENDING_CLEANUP_HOUR ?? '6', 10) || 6)
+);
+
+/** When true, delete pending posts from all target groups once each morning before posting. */
+export const MORNING_PENDING_CLEANUP_ENABLED =
+  String(process.env.MORNING_PENDING_CLEANUP_ENABLED ?? 'true').toLowerCase() !== 'false';
+
 export { ROOT_DIR };
 export const SESSION_FILE = path.join(ROOT_DIR, 'session.json');
 export const USER_DATA_DIR = path.join(ROOT_DIR, '.fb-profile');

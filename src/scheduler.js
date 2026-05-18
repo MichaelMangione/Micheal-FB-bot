@@ -90,6 +90,7 @@ export function loadPostingState() {
       postsInLast24h: 0,
       lastResetTime: Date.now(),
       completedPostIds: [],
+      lastPendingCleanupDate: null,
     };
     return freshState;
   }
@@ -101,6 +102,7 @@ export function loadPostingState() {
       postsInLast24h: 0,
       lastResetTime: Date.now(),
       completedPostIds: [],
+      lastPendingCleanupDate: null,
     };
   }
 
@@ -113,6 +115,7 @@ export function loadPostingState() {
       postsInLast24h: parsed.postsInLast24h ?? 0,
       lastResetTime: parsed.lastResetTime ?? Date.now(),
       completedPostIds: Array.isArray(parsed.completedPostIds) ? parsed.completedPostIds : [],
+      lastPendingCleanupDate: parsed.lastPendingCleanupDate ?? null,
     };
   } catch {
     return {
@@ -120,6 +123,7 @@ export function loadPostingState() {
       postsInLast24h: 0,
       lastResetTime: Date.now(),
       completedPostIds: [],
+      lastPendingCleanupDate: null,
     };
   }
 }
