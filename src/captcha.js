@@ -240,14 +240,57 @@ export async function detectAndSolveCaptcha(page, apiKey) {
 }
 
 /**
+ * Dismisses the "See more on Facebook" login-gate modal if present.
+ * Returns true if the modal was found and closed.
+ */
+export async function dismissLoginGate(page) {
+  try {
+    const dismissed = await page.evaluate(() => {
+      const text = document.body?.innerText || '';
+      if (!text.includes('See more on Facebook')) return false;
+
+      // Try aria-label="Close" first (standard FB modal close button)
+      const byAria = document.querySelector('[aria-label="Close"][role="button"], button[aria-label="Close"]');
+      if (byAria) { byAria.click(); return true; }
+
+      // Fallback: any role="button" or button that contains an SVG path (the × icon)
+      // positioned in the top-right corner of the modal
+      const btns = Array.from(document.querySelectorAll('[role="button"], button'));
+      for (const btn of btns) {
+        const rect = btn.getBoundingClientRect();
+        // Close button is small, in the upper-right area of the viewport
+        if (rect.width < 60 && rect.height < 60 && rect.top < 300 && rect.right > window.innerWidth * 0.6) {
+          btn.click();
+          return true;
+        }
+      }
+      return false;
+    });
+
+    if (dismissed) {
+      console.log('[captcha] Dismissed "See more on Facebook" login gate');
+      await sleep(800);
+    }
+    return dismissed;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Repeatedly solves CAPTCHA while present (e.g. after navigation or challenge).
+ * Also dismisses the login-gate modal on each pass.
  */
 export async function resolveCaptchasUntilClear(page, apiKey, { maxRounds = 5 } = {}) {
+  // Always try to dismiss the login gate, even when no captcha API key is set
+  await dismissLoginGate(page);
+
   if (!apiKey?.trim()) return;
   for (let i = 0; i < maxRounds; i++) {
     const found = await detectAndSolveCaptcha(page, apiKey);
     if (!found) return;
     await sleep(2000);
+    await dismissLoginGate(page);
     let still = null;
     try {
       still = (await extractRecaptchaSiteKey(page)) || (await findCaptchaImageSrc(page));

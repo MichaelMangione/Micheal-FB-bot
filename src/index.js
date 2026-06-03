@@ -7,6 +7,7 @@ import {
   CAPTCHA_API_KEY,
   FB_EMAIL,
   FB_PASSWORD,
+  buildEngagementConfig,
   HEADLESS,
   MORNING_PENDING_CLEANUP_ENABLED,
   MORNING_PENDING_CLEANUP_HOUR,
@@ -23,6 +24,7 @@ import {
 } from './config.js';
 
 import { resolveCaptchasUntilClear } from './captcha.js';
+import { runEngagement } from './engagement.js';
 import { randomStepDelay, randomMouseMove, sleep, typeIntoFacebookComposer } from './humanize.js';
 import { pickImageByPostId } from './media.js';
 import {
@@ -58,6 +60,14 @@ function endTimer(label) {
   const elapsed = ((Date.now() - startedAt) / 1000).toFixed(2);
   console.log(`✓ [timer] ${label} - took ${elapsed}s`);
   timers.delete(label);
+}
+
+function applyJitter(ms, jitterPct) {
+  const pct = Math.max(0, Number(jitterPct) || 0);
+  const spread = Math.round((ms * pct) / 100);
+  const min = Math.max(0, ms - spread);
+  const max = ms + spread;
+  return Math.floor(Math.random() * (max - min + 1)) + min;
 }
 
 // Graceful shutdown - save state before exiting
@@ -1409,51 +1419,35 @@ async function openPendingPostsView(page, groupUrl, groupIndex) {
   const tag = `[cleanup group ${groupIndex}]`;
   const normalized = groupUrl.replace(/\/$/, '');
   const candidates = [
+    `${normalized}/my_pending_content`,
     `${normalized}/pending_posts`,
-    `${normalized}?sorting_setting=PENDING_POSTS`,
   ];
 
   for (const url of candidates) {
     try {
       await navigateToGroupWithRetry(page, url, groupIndex);
-      await sleep(1500);
-      const looksRight = await page.evaluate(() => {
-        const text = (document.body?.innerText || '').toLowerCase();
-        return text.includes('pending post') || text.includes('pending posts') || text.includes('pending');
+      await sleep(2500);
+      const hasPendingContent = await page.evaluate(() => {
+        return (
+          !!document.querySelector('div[aria-label="Delete"][role="button"]') ||
+          !!document.querySelector('div[aria-label="Actions for this post"][role="button"]') ||
+          !!document.querySelector('div[aria-label^="Actions for this post"][role="button"]')
+        );
       });
-      if (looksRight || page.url().toLowerCase().includes('pending')) {
+      if (hasPendingContent || page.url().toLowerCase().includes('pending')) {
         console.log(`${tag} Opened pending view: ${url}`);
+        return true;
+      }
+      // Also accept pages that have no pending posts (empty state is still a valid pending page)
+      const isOnPendingPage = page.url().toLowerCase().includes('my_pending_content') ||
+        page.url().toLowerCase().includes('pending_posts');
+      if (isOnPendingPage) {
+        console.log(`${tag} On pending page (possibly empty): ${url}`);
         return true;
       }
     } catch {
       // Try next variant.
     }
-  }
-
-  await navigateToGroupWithRetry(page, groupUrl, groupIndex);
-  await sleep(1500);
-
-  const clickedPendingTab = await page.evaluate(() => {
-    const clickable = Array.from(document.querySelectorAll('a, button, [role="tab"], [role="button"]'));
-    const isVisible = (el) => {
-      const rect = el.getBoundingClientRect();
-      return rect.width > 10 && rect.height > 10 && rect.bottom > 0 && rect.top < window.innerHeight;
-    };
-    for (const el of clickable) {
-      const text = (el.textContent || '').toLowerCase();
-      const aria = (el.getAttribute('aria-label') || '').toLowerCase();
-      if ((text.includes('pending') || aria.includes('pending')) && isVisible(el)) {
-        el.click();
-        return true;
-      }
-    }
-    return false;
-  });
-
-  if (clickedPendingTab) {
-    await sleep(1500);
-    console.log(`${tag} Opened pending view via in-page tab/button`);
-    return true;
   }
 
   console.log(`${tag} Pending view not found (may not have pending posts or permissions).`);
@@ -1462,56 +1456,49 @@ async function openPendingPostsView(page, groupUrl, groupIndex) {
 
 async function clickDeletePendingAction(page) {
   return page.evaluate(() => {
-    const candidates = Array.from(document.querySelectorAll('button, [role="button"], a[role="button"]'));
     const isVisible = (el) => {
       const rect = el.getBoundingClientRect();
       return rect.width > 12 && rect.height > 12 && rect.bottom > 0 && rect.top < window.innerHeight;
     };
 
-    const isAction = (text) => {
-      const t = text.toLowerCase();
-      return (
-        t.includes('delete post') ||
-        t.includes('remove post') ||
-        t.includes('cancel post') ||
-        t.includes('delete request') ||
-        t.includes('cancel request')
-      );
-    };
-
-    for (const el of candidates) {
-      const text = (el.textContent || '').trim();
-      const aria = (el.getAttribute('aria-label') || '').trim();
-      const joined = `${text} ${aria}`.trim();
-      if (joined && isAction(joined) && isVisible(el)) {
-        el.click();
-        return joined;
-      }
+    // Primary: exact Delete button Facebook renders directly on each pending post
+    const deleteBtn = Array.from(document.querySelectorAll('div[aria-label="Delete"][role="button"]')).find(isVisible);
+    if (deleteBtn) {
+      deleteBtn.scrollIntoView({ block: 'center', behavior: 'instant' });
+      deleteBtn.click();
+      return 'Delete';
     }
+
+    // Debug: dump aria-labels of all visible role=button elements
+    const allBtns = Array.from(document.querySelectorAll('[role="button"]'))
+      .filter(isVisible)
+      .map(el => ({ aria: el.getAttribute('aria-label'), text: (el.textContent || '').trim().slice(0, 60) }))
+      .filter(b => b.aria || b.text)
+      .slice(0, 30);
+    console.log('[cleanup-debug] No Delete button found. Visible buttons:', JSON.stringify(allBtns));
     return '';
   });
 }
 
 async function clickDeleteConfirmation(page) {
   return page.evaluate(() => {
-    const options = Array.from(document.querySelectorAll('button, [role="button"]'));
     const isVisible = (el) => {
       const rect = el.getBoundingClientRect();
       return rect.width > 12 && rect.height > 12 && rect.bottom > 0 && rect.top < window.innerHeight;
     };
 
-    const confirmWords = ['delete', 'remove', 'confirm', 'yes'];
-    for (const el of options) {
-      const text = (el.textContent || '').toLowerCase().trim();
-      const aria = (el.getAttribute('aria-label') || '').toLowerCase().trim();
-      const joined = `${text} ${aria}`.trim();
-      if (!joined || !isVisible(el)) continue;
-
-      if (confirmWords.some((w) => joined === w || joined.startsWith(`${w} `) || joined.includes(` ${w}`))) {
-        if (!joined.includes('edit') && !joined.includes('view') && !joined.includes('copy')) {
-          el.click();
-          return joined;
-        }
+    // Facebook's confirmation dialog typically has a "Delete" button with role="button"
+    const confirmSelectors = [
+      'div[aria-label="Delete"][role="button"]',
+      'div[aria-label="Confirm"][role="button"]',
+      'div[aria-label="OK"][role="button"]',
+    ];
+    for (const sel of confirmSelectors) {
+      const btn = Array.from(document.querySelectorAll(sel)).find(isVisible);
+      if (btn) {
+        btn.scrollIntoView({ block: 'center', behavior: 'instant' });
+        btn.click();
+        return btn.getAttribute('aria-label') || 'confirmed';
       }
     }
     return '';
@@ -1566,6 +1553,7 @@ async function runMorningPendingCleanup(browser) {
       const opened = await openPendingPostsView(page, groupUrl, groupIndex);
       if (!opened) continue;
 
+      await sleep(2500); // let the pending posts fully render before scanning
       totalRemoved += await deletePendingPostsInGroup(page, groupIndex);
     } catch (err) {
       console.warn(`[cleanup group ${groupIndex}] Failed: ${err.message}`);
@@ -1595,6 +1583,7 @@ async function main() {
   }
 
   const scheduleConfig = loadScheduleConfig();
+  const engagementConfig = buildEngagementConfig(scheduleConfig);
   const schedulingEnabled = scheduleConfig.scheduling.enabled;
   const posts = schedulingEnabled ? loadPosts() : [];
   const state = (schedulingEnabled || MORNING_PENDING_CLEANUP_ENABLED) ? loadPostingState() : null;
@@ -1781,10 +1770,23 @@ async function main() {
             await resolveCaptchasUntilClear(groupPage, CAPTCHA_API_KEY);
           }
 
+          if (engagementConfig.enabled) {
+            console.log(`[group ${i + 1}] Running engagement phase...`);
+            await runEngagement(groupPage, groupUrl, { ...scheduleConfig, engagement: engagementConfig });
+            const cooldownMs = applyJitter(engagementConfig.cooldownMs, engagementConfig.cooldownJitterPct);
+            console.log(`[group ${i + 1}] Engagement cooldown: ${formatDelay(cooldownMs)}`);
+            await sleep(cooldownMs);
+          }
+
           console.log(`[group ${i + 1}] Opening composer...`);
           
           // Add explicit wait for page content to render after login
           try {
+            if (!(await isPageAlive(groupPage))) {
+              console.warn(`[group ${i + 1}] Page is no longer alive before composer wait; skipping group.`);
+              continue;
+            }
+
             await Promise.race([
               groupPage.waitForSelector('[role="button"]', { timeout: 8000 }),
               groupPage.waitForFunction(() => document.querySelectorAll('[role="button"]').length > 3, { timeout: 8000 })
@@ -1793,7 +1795,16 @@ async function main() {
               console.warn(`[group ${i + 1}] ⚠️ Waiting for UI elements timed out, continuing...`);
             });
           } catch {
-            // Ignore - page might still be usable
+            // Ignore transient frame detaches and continue only if the page is still alive.
+            try {
+              if (!(await isPageAlive(groupPage))) {
+                console.warn(`[group ${i + 1}] Page detached before composer wait completed; skipping group.`);
+                continue;
+              }
+            } catch (err) {
+              console.warn(`[group ${i + 1}] Composer readiness check failed: ${err.message}`);
+              continue;
+            }
           }
           
           await sleep(1500); // Give page time to stabilize after login

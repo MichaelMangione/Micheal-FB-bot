@@ -5,6 +5,15 @@
     "enabled": true,
     "mode": "interval"
   },
+  "engagement": {
+    "enabled": true,
+    "likesPerGroup": 2,
+    "commentsPerGroup": 1,
+    "maxScrolls": 4,
+    "cooldownMs": 1200000,
+    "cooldownJitterPct": 10,
+    "commentReuseCooldownMs": 86400000
+  },
   "notes": {
     "delayBetweenPostsMs": "Delay between posts in milliseconds. 14400000 = 4 hours, 21600000 = 6 hours, 10800000 = 3 hours",
     "postsPerDay": "Max posts to post in a 24-hour period (0 = unlimited)",

@@ -1,4 +1,5 @@
 import dotenv from 'dotenv';
+import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
@@ -31,6 +32,79 @@ export const TARGET_GROUP_URLS = _rawUrls
   : [];
 
 export const POST_TEXT = process.env.POST_TEXT || '';
+
+export const COMMENTS_FILE = path.join(ROOT_DIR, 'comments.json');
+export const ENGAGEMENT_STATE_FILE = path.join(ROOT_DIR, '.engagement-state.json');
+
+export const DEFAULT_ENGAGEMENT_CONFIG = {
+  enabled: true,
+  likesPerGroup: 2,
+  commentsPerGroup: 1,
+  maxScrolls: 4,
+  cooldownMs: 1200000,
+  cooldownJitterPct: 10,
+  commentReuseCooldownMs: 86400000,
+};
+
+function readOptionalIntEnv(name) {
+  const raw = process.env[name];
+  if (raw === undefined || raw === null || String(raw).trim() === '') return undefined;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function readJsonFile(filePath, fallback) {
+  if (!fs.existsSync(filePath)) return fallback;
+  try {
+    return JSON.parse(fs.readFileSync(filePath, 'utf8'));
+  } catch {
+    return fallback;
+  }
+}
+
+export function loadCommentsPool() {
+  const data = readJsonFile(COMMENTS_FILE, null);
+  if (!data || typeof data !== 'object') {
+    return { version: 1, comments: [] };
+  }
+
+  const comments = Array.isArray(data.comments)
+    ? data.comments
+        .filter((comment) => comment && typeof comment.id === 'string' && typeof comment.text === 'string')
+        .map((comment) => ({ id: comment.id.trim(), text: comment.text.trim() }))
+        .filter((comment) => comment.id && comment.text)
+    : [];
+
+  return {
+    version: Number.isFinite(Number(data.version)) ? Number(data.version) : 1,
+    comments,
+  };
+}
+
+export function buildEngagementConfig(scheduleConfig = {}) {
+  const scheduled = scheduleConfig?.engagement || {};
+  return {
+    enabled: scheduled.enabled ?? DEFAULT_ENGAGEMENT_CONFIG.enabled,
+    likesPerGroup:
+      readOptionalIntEnv('LIKES_PER_GROUP') ?? scheduled.likesPerGroup ?? DEFAULT_ENGAGEMENT_CONFIG.likesPerGroup,
+    commentsPerGroup:
+      readOptionalIntEnv('COMMENTS_PER_GROUP') ??
+      scheduled.commentsPerGroup ??
+      DEFAULT_ENGAGEMENT_CONFIG.commentsPerGroup,
+    maxScrolls: readOptionalIntEnv('MAX_SCROLLS') ?? scheduled.maxScrolls ?? DEFAULT_ENGAGEMENT_CONFIG.maxScrolls,
+    cooldownMs:
+      readOptionalIntEnv('ENGAGEMENT_COOLDOWN_MS') ??
+      scheduled.cooldownMs ??
+      DEFAULT_ENGAGEMENT_CONFIG.cooldownMs,
+    cooldownJitterPct: scheduled.cooldownJitterPct ?? DEFAULT_ENGAGEMENT_CONFIG.cooldownJitterPct,
+    commentReuseCooldownMs:
+      readOptionalIntEnv('COMMENT_REUSE_COOLDOWN_MS') ??
+      scheduled.commentReuseCooldownMs ??
+      DEFAULT_ENGAGEMENT_CONFIG.commentReuseCooldownMs,
+    botUsername: process.env.FB_BOT_USERNAME || '',
+    commentsPool: loadCommentsPool(),
+  };
+}
 
 function resolveOptionalPath(raw) {
   if (!raw?.trim()) return '';

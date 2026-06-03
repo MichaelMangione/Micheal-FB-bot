@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { DEFAULT_ENGAGEMENT_CONFIG } from './config.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT_DIR = path.join(__dirname, '..');
@@ -37,6 +38,32 @@ export function loadScheduleConfig() {
       enabled: true,
       mode: 'interval',
     },
+    engagement: { ...DEFAULT_ENGAGEMENT_CONFIG },
+  };
+
+  const mergeDeep = (base, override) => {
+    if (!override || typeof override !== 'object' || Array.isArray(override)) {
+      return Array.isArray(base) ? [...base] : { ...base };
+    }
+
+    const result = Array.isArray(base) ? [...base] : { ...base };
+    for (const [key, value] of Object.entries(override)) {
+      if (
+        value &&
+        typeof value === 'object' &&
+        !Array.isArray(value) &&
+        base?.[key] &&
+        typeof base[key] === 'object' &&
+        !Array.isArray(base[key])
+      ) {
+        result[key] = mergeDeep(base[key], value);
+      } else if (Array.isArray(value)) {
+        result[key] = [...value];
+      } else {
+        result[key] = value;
+      }
+    }
+    return result;
   };
 
   if (!fs.existsSync(scheduleFile)) {
@@ -47,7 +74,7 @@ export function loadScheduleConfig() {
   try {
     const data = fs.readFileSync(scheduleFile, 'utf-8');
     const config = JSON.parse(data);
-    return { ...defaults, ...config };
+    return mergeDeep(defaults, config);
   } catch (err) {
     console.error('[scheduler] Error loading schedule.json:', err.message);
     return defaults;
