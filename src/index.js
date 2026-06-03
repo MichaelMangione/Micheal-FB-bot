@@ -221,6 +221,7 @@ async function autoLoginIfNeeded(page) {
       }
 
       console.log('[login] ====== STEP 2: Looking for Continue Button ======');
+      const urlBeforeStep2 = page.url();
       // Try selectors first, then text-based fallback
       let continueClicked = await tryClick([
         'button[name="login"]',
@@ -228,12 +229,12 @@ async function autoLoginIfNeeded(page) {
         'div[role="button"][aria-label*="Continue" i]',
         'div[role="button"][aria-label*="Log In" i]',
       ]);
-      
+
       if (!continueClicked) {
         console.log('[login] Selector-based continue failed, trying text-based...');
         continueClicked = await tryClickByText(['Continue', 'Next', 'Log in']);
       }
-      
+
       // Wait for page to transition and password field to appear
       console.log('[login] Waiting for password field to appear...');
       try {
@@ -244,6 +245,33 @@ async function autoLoginIfNeeded(page) {
         console.log('[login] ✓ Password field appeared');
       } catch {
         console.log('[login] Password field did not appear within 8s');
+      }
+
+      // If clicking "Log In" navigated to a new page (e.g. /login/), the email field
+      // on that page will be empty — re-fill it before touching the password.
+      const urlAfterStep2 = page.url();
+      if (urlAfterStep2 !== urlBeforeStep2) {
+        console.log(`[login] Page changed: ${urlBeforeStep2} → ${urlAfterStep2}`);
+        const emailOnNewPage = await page.$('input[name="email"], input[type="email"], #email');
+        if (emailOnNewPage) {
+          const currentVal = await emailOnNewPage.evaluate((el) => el.value || '');
+          if (!currentVal.includes('@')) {
+            console.log('[login] Re-filling email on new page...');
+            await emailOnNewPage.click({ clickCount: 3 });
+            await sleep(200);
+            await page.keyboard.type(FB_EMAIL, { delay: 60 });
+            await sleep(400);
+            // Advance past the email step (Continue / Next button)
+            const emailAdvanced = await tryClick([
+              'button[type="submit"]',
+              'div[role="button"][aria-label*="Continue" i]',
+              'div[role="button"][aria-label*="Next" i]',
+            ]);
+            if (!emailAdvanced) await tryClickByText(['Continue', 'Next']);
+            await sleep(2000);
+            console.log('[login] ✓ Email re-filled on new page');
+          }
+        }
       }
 
       console.log('[login] ====== STEP 3: Looking for Password Field ======');
@@ -1706,10 +1734,17 @@ async function main() {
       console.log(`📝 POST #${post.id} START TIME: ${new Date().toLocaleTimeString()}`);
       console.log(`${'='.repeat(70)}`);
 
+      let sessionDead = false;
+
       for (let i = 0; i < TARGET_GROUP_URLS.length; i++) {
         const groupUrl = TARGET_GROUP_URLS[i];
         const isLast = i === TARGET_GROUP_URLS.length - 1;
         const groupTimerLabel = `Group ${i + 1} total time`;
+
+        if (sessionDead) {
+          console.warn(`[group ${i + 1}] Session dead — skipping.`);
+          continue;
+        }
 
         console.log(`\n[group ${i + 1}/${TARGET_GROUP_URLS.length}] ${groupUrl}`);
         startTimer(groupTimerLabel);
@@ -1777,10 +1812,40 @@ async function main() {
             await resolveCaptchasUntilClear(groupPage, CAPTCHA_API_KEY);
           }
 
-          // Hard stop: if still not logged in, skip this group entirely
+          // Hard stop: if still not logged in, attempt one-time recovery via the main page
           if (isLoginOrCheckpointUrl(groupPage.url()) || !(await isLoggedInState(groupPage))) {
-            console.warn(`[group ${i + 1}] ⚠️ Still not logged in after session refresh — skipping group.`);
-            continue;
+            try {
+              console.log(`[group ${i + 1}] Attempting session recovery via main browser page...`);
+              if (!(await isLoggedInState(page))) {
+                await navigateToGroupWithRetry(page, 'https://www.facebook.com/', 0);
+                await sleep(2000);
+                await autoLoginIfNeeded(page);
+                await sleep(1000);
+              }
+              if (await isLoggedInState(page)) {
+                await saveSessionCookies(page);
+                console.log(`[group ${i + 1}] ✅ Main page session active — saved fresh cookies. Retrying group...`);
+                const freshCookies = await loadSessionFromDisk();
+                if (freshCookies?.length) {
+                  try { await groupPage.setCookie(...freshCookies); } catch { /* ignore */ }
+                }
+                await navigateToGroupWithRetry(groupPage, groupUrl, i + 1);
+                await sleep(2000);
+                await resolveCaptchasUntilClear(groupPage, CAPTCHA_API_KEY);
+                if (isLoginOrCheckpointUrl(groupPage.url()) || !(await isLoggedInState(groupPage))) {
+                  console.warn(`[group ${i + 1}] ⚠️ Group still not accessible after recovery — skipping.`);
+                  continue;
+                }
+              } else {
+                console.warn(`[group ${i + 1}] ❌ Session recovery failed — marking session dead, skipping remaining groups.`);
+                sessionDead = true;
+                continue;
+              }
+            } catch (recovErr) {
+              console.warn(`[group ${i + 1}] Session recovery error: ${recovErr.message} — marking dead.`);
+              sessionDead = true;
+              continue;
+            }
           }
 
           if (engagementConfig.enabled) {
