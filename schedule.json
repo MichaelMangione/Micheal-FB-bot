@@ -1,6 +1,6 @@
 {
   "scheduling": {
-    "delayBetweenPostsMs": 14400000,
+    "delayBetweenPostsMs": 10800000,
     "postsPerDay": 12,
     "enabled": true,
     "mode": "interval"
