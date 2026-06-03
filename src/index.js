@@ -1697,72 +1697,71 @@ async function main() {
   await saveSessionCookies(cookies);
   console.log('[session] Cookies saved to session.json');
 
-  // Continuous posting loop — stays alive between posts
-  while (true) {
-    // Reload state fresh each cycle so disk changes are picked up
-    const cycleState = (schedulingEnabled || MORNING_PENDING_CLEANUP_ENABLED) ? loadPostingState() : null;
+  // Load state and select this run's post
+  const cycleState = (schedulingEnabled || MORNING_PENDING_CLEANUP_ENABLED) ? loadPostingState() : null;
 
-    // Morning cleanup check
-    if (shouldRunMorningCleanup(cycleState)) {
-      console.log(
-        `[cleanup] Morning cleanup due (hour >= ${MORNING_PENDING_CLEANUP_HOUR}). Running now before posting...`
-      );
-      await runMorningPendingCleanup(browser);
-      cycleState.lastPendingCleanupDate = getLocalDateKey();
-      savePostingState(cycleState);
-      console.log(`[cleanup] Marked complete for ${cycleState.lastPendingCleanupDate}.`);
+  // Morning cleanup check
+  if (shouldRunMorningCleanup(cycleState)) {
+    console.log(
+      `[cleanup] Morning cleanup due (hour >= ${MORNING_PENDING_CLEANUP_HOUR}). Running now before posting...`
+    );
+    await runMorningPendingCleanup(browser);
+    cycleState.lastPendingCleanupDate = getLocalDateKey();
+    savePostingState(cycleState);
+    console.log(`[cleanup] Marked complete for ${cycleState.lastPendingCleanupDate}.`);
+  }
+
+  // Daily limit check
+  if (schedulingEnabled && cycleState && !canPostAccordingToLimit(scheduleConfig, cycleState)) {
+    console.log('[scheduler] Daily post limit reached. Exiting — daemon will retry later.');
+    await browser.close();
+    return;
+  }
+
+  // Select next post
+  let post;
+  if (schedulingEnabled) {
+    post = getNextPost(posts, cycleState);
+    if (!post) {
+      console.log('[scheduler] All posts have been completed.');
+      await browser.close();
+      return;
     }
+    console.log(`[scheduler] Next post: Post #${post.id}`);
+  } else {
+    post = { id: 1, text: process.env.POST_TEXT };
+  }
 
-    // Daily limit check
-    if (schedulingEnabled && cycleState && !canPostAccordingToLimit(scheduleConfig, cycleState)) {
-      console.log('[scheduler] Daily post limit reached. Waiting 1 hour before checking again...');
-      await sleep(60 * 60 * 1000);
-      continue;
-    }
-
-    // Select next post
-    let post;
-    if (schedulingEnabled) {
-      post = getNextPost(posts, cycleState);
-      if (!post) {
-        console.log('[scheduler] All posts have been completed.');
-        break;
-      }
-      console.log(`[scheduler] Next post: Post #${post.id}`);
-    } else {
-      post = { id: 1, text: process.env.POST_TEXT };
-    }
-
-    // Session health check — if expired, try to refresh; if it fails, wait 30 min and retry
-    if (!(await isLoggedInState(page))) {
-      console.log('[session] Session not active — attempting refresh before posting...');
-      try {
-        await page.goto('https://www.facebook.com/', { waitUntil: 'domcontentloaded', timeout: 30000 });
-        await sleep(2000);
-        await resolveCaptchasUntilClear(page, CAPTCHA_API_KEY);
-        await autoLoginIfNeeded(page);
-        await sleep(2000);
-      } catch (sessErr) {
-        console.warn(`[session] Refresh error: ${sessErr.message}`);
-      }
-      if (!(await isLoggedInState(page))) {
-        console.warn('[session] ⚠️ Cannot establish session. Will retry in 30 min...');
-        await sleep(30 * 60 * 1000);
-        continue;
-      }
-      await saveSessionCookies(page);
-      console.log('[session] ✅ Session restored.');
-    }
-
-    console.log(`[multi-group] Posting to ${TARGET_GROUP_URLS.length} group(s).`);
-    const postStartTime = Date.now();
-
+  // Session health check — if expired, try once to refresh; exit with failure so daemon retries
+  if (!(await isLoggedInState(page))) {
+    console.log('[session] Session not active — attempting refresh before posting...');
     try {
-      console.log(`\n${'='.repeat(70)}`);
-      console.log(`📝 POST #${post.id} START TIME: ${new Date().toLocaleTimeString()}`);
-      console.log(`${'='.repeat(70)}`);
+      await page.goto('https://www.facebook.com/', { waitUntil: 'domcontentloaded', timeout: 30000 });
+      await sleep(2000);
+      await resolveCaptchasUntilClear(page, CAPTCHA_API_KEY);
+      await autoLoginIfNeeded(page);
+      await sleep(2000);
+    } catch (sessErr) {
+      console.warn(`[session] Refresh error: ${sessErr.message}`);
+    }
+    if (!(await isLoggedInState(page))) {
+      console.warn('[session] ⚠️ Cannot establish session. Exiting — daemon will retry.');
+      await browser.close();
+      process.exit(1);
+    }
+    await saveSessionCookies(page);
+    console.log('[session] ✅ Session restored.');
+  }
 
-      let sessionDead = false;
+  console.log(`[multi-group] Posting to ${TARGET_GROUP_URLS.length} group(s).`);
+  const postStartTime = Date.now();
+
+  try {
+    console.log(`\n${'='.repeat(70)}`);
+    console.log(`📝 POST #${post.id} START TIME: ${new Date().toLocaleTimeString()}`);
+    console.log(`${'='.repeat(70)}`);
+
+    let sessionDead = false;
 
       for (let i = 0; i < TARGET_GROUP_URLS.length; i++) {
         const groupUrl = TARGET_GROUP_URLS[i];
@@ -2027,38 +2026,22 @@ async function main() {
         }
       }
 
-      if (schedulingEnabled && cycleState) {
-        updateStateAfterPost(cycleState, post.id);
-        savePostingState(cycleState);
-        console.log(`[scheduler] Post #${post.id} done. Posted today: ${cycleState.postsInLast24h}`);
-      }
-      const totalMin = ((Date.now() - postStartTime) / 1000 / 60).toFixed(2);
-      console.log(`\n${'='.repeat(70)}`);
-      console.log(`✅ POST #${post.id} COMPLETED - Total time: ${totalMin} minutes`);
-      console.log(`${'='.repeat(70)}\n`);
-    } catch (postErr) {
-      console.error(`[posting] Error on post #${post.id}: ${postErr.message}`);
-      if (String(postErr.message || '').toLowerCase().includes('connection closed')) {
-        console.error('[posting] Browser disconnected. Stopping.');
-        throw postErr;
-      }
+    if (schedulingEnabled && cycleState) {
+      updateStateAfterPost(cycleState, post.id);
+      savePostingState(cycleState);
+      console.log(`[scheduler] Post #${post.id} done. Posted today: ${cycleState.postsInLast24h}`);
     }
-
-    if (!schedulingEnabled) break;
-
-    const delayMs = scheduleConfig.scheduling.delayBetweenPostsMs;
-    const nextUp = getNextPost(posts, schedulingEnabled ? loadPostingState() : null);
-    if (!nextUp) {
-      console.log('[scheduler] No more posts remaining.');
-      break;
+    const totalMin = ((Date.now() - postStartTime) / 1000 / 60).toFixed(2);
+    console.log(`\n${'='.repeat(70)}`);
+    console.log(`✅ POST #${post.id} COMPLETED - Total time: ${totalMin} minutes`);
+    console.log(`${'='.repeat(70)}\n`);
+  } catch (postErr) {
+    console.error(`[posting] Error on post #${post.id}: ${postErr.message}`);
+    if (String(postErr.message || '').toLowerCase().includes('connection closed')) {
+      console.error('[posting] Browser disconnected. Stopping.');
+      throw postErr;
     }
-    console.log(`[scheduler] Next post in ${formatDelay(delayMs)} (Post #${nextUp.id}). Waiting...`);
-    await sleep(delayMs);
   }
-
-  console.log('\n' + '='.repeat(70));
-  console.log('🎉 ALL POSTS COMPLETED');
-  console.log('='.repeat(70));
 
   await browser.close();
 }

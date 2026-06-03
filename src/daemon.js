@@ -95,54 +95,62 @@ async function runDaemon() {
   console.log(`  - Mode: ${scheduleConfig.scheduling.mode}`);
 
   let consecutiveErrors = 0;
-  const maxErrors = 3;
+  const maxErrors = 10;
 
-  // Main daemon loop - runs indefinitely, auto-cycling through posts
+  // Main daemon loop - runs until all posts are done
   while (true) {
-    const state = loadPostingState();
-    const nextPost = getNextPost(posts, state);
+    // Stop if no posts remain
+    const stateBeforeRun = loadPostingState();
+    const nextPost = getNextPost(posts, stateBeforeRun);
+    if (!nextPost) {
+      console.log('[daemon] All posts completed. Shutting down.');
+      break;
+    }
 
     try {
       // Run the bot for one post
       await runBotProcess();
       consecutiveErrors = 0;
 
-      // After a successful post, wait for the configured delay
+      // After a successful post, check if more remain
       const updatedState = loadPostingState();
       const nextPostAfter = getNextPost(posts, updatedState);
 
-      if (nextPostAfter) {
-        console.log(`\n[daemon] Waiting ${formatDelay(delayMs)} before next post...`);
-        console.log(`[daemon] Post #${nextPostAfter.id} will be posted at ${new Date(Date.now() + delayMs).toISOString()}`);
+      if (!nextPostAfter) {
+        console.log('[daemon] All posts completed. Shutting down.');
+        break;
+      }
 
-        // Display countdown every hour (or less frequently for longer delays)
-        const checkInterval = Math.min(3600000, delayMs / 4); // Check 4 times or hourly
-        const startTime = Date.now();
+      console.log(`\n[daemon] Waiting ${formatDelay(delayMs)} before next post...`);
+      console.log(`[daemon] Post #${nextPostAfter.id} will run at ${new Date(Date.now() + delayMs).toISOString()}`);
 
-        while (Date.now() - startTime < delayMs) {
-          const remaining = delayMs - (Date.now() - startTime);
-          if (remaining > 0) {
-            await sleep(Math.min(checkInterval, remaining));
-            if (remaining % 3600000 < checkInterval) {
-              console.log(`[daemon] Still waiting... (${formatDelay(remaining)} remaining)`);
-            }
+      // Countdown with periodic log every hour
+      const checkInterval = Math.min(3600000, delayMs / 4);
+      const startTime = Date.now();
+      while (Date.now() - startTime < delayMs) {
+        const remaining = delayMs - (Date.now() - startTime);
+        if (remaining > 0) {
+          await sleep(Math.min(checkInterval, remaining));
+          const stillLeft = delayMs - (Date.now() - startTime);
+          if (stillLeft > 60000) {
+            console.log(`[daemon] Still waiting... (${formatDelay(stillLeft)} remaining)`);
           }
         }
-
-        console.log(`[daemon] Delay complete. Proceeding with next post...`);
       }
+
+      console.log('[daemon] Delay complete. Proceeding with next post...');
     } catch (err) {
       console.error(`[daemon] Error during posting: ${err.message}`);
       consecutiveErrors++;
 
       if (consecutiveErrors >= maxErrors) {
-        console.error(`[daemon] ❌ Too many consecutive errors (${maxErrors}). Stopping daemon.`);
+        console.error(`[daemon] ❌ ${maxErrors} consecutive errors. Stopping daemon.`);
         process.exit(1);
       }
 
-      // Wait before retry
-      const retryDelay = 5 * 60 * 1000; // 5 minutes
-      console.log(`[daemon] Retrying in ${formatDelay(retryDelay)}...`);
+      // Longer retry delay — session failures need time to resolve
+      const retryDelay = 15 * 60 * 1000; // 15 minutes
+      console.log(`[daemon] Retry ${consecutiveErrors}/${maxErrors} in ${formatDelay(retryDelay)}...`);
       await sleep(retryDelay);
     }
   }
