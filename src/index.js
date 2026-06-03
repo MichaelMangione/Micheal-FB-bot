@@ -1748,26 +1748,39 @@ async function main() {
           endTimer(`Group ${i + 1} captcha`);
 
           if (isLoginOrCheckpointUrl(groupPage.url()) || !(await isLoggedInState(groupPage))) {
-            // Session expired: refresh from main Facebook page and restore cookies
-            console.log(`[group ${i + 1}] 🔄 Session expired, refreshing from main page...`);
+            // Navigate to facebook.com to pick up the shared browser session, then retry the group
+            console.log(`[group ${i + 1}] 🔄 Session not active — navigating to facebook.com to pick up session...`);
             await navigateToGroupWithRetry(groupPage, 'https://www.facebook.com/', i + 1);
-            
-            // Restore fresh cookies
-            const freshCookies = await loadSessionFromDisk();
-            if (freshCookies?.length) {
-              try {
-                await groupPage.setCookie(...freshCookies);
-                console.log(`[group ${i + 1}] ✅ Restored cookies from session`);
-              } catch (err) {
-                console.warn(`[group ${i + 1}] Cookie restore warning:`, err.message);
-              }
-            }
-            
-            // Navigate back to group with fresh session
-            await sleep(1000);
-            await navigateToGroupWithRetry(groupPage, groupUrl, i + 1);
-            await autoLoginIfNeeded(groupPage);
+            await sleep(2000);
             await resolveCaptchasUntilClear(groupPage, CAPTCHA_API_KEY);
+
+            if (!(await isLoggedInState(groupPage))) {
+              // Still not logged in — restore cookies from disk and try once more
+              const freshCookies = await loadSessionFromDisk();
+              if (freshCookies?.length) {
+                try {
+                  await groupPage.setCookie(...freshCookies);
+                  console.log(`[group ${i + 1}] ✅ Restored cookies from session`);
+                } catch (err) {
+                  console.warn(`[group ${i + 1}] Cookie restore warning:`, err.message);
+                }
+              }
+              await navigateToGroupWithRetry(groupPage, 'https://www.facebook.com/', i + 1);
+              await sleep(1500);
+              await autoLoginIfNeeded(groupPage);
+              await resolveCaptchasUntilClear(groupPage, CAPTCHA_API_KEY);
+            }
+
+            // Navigate to the group now that session is restored
+            await navigateToGroupWithRetry(groupPage, groupUrl, i + 1);
+            await sleep(1500);
+            await resolveCaptchasUntilClear(groupPage, CAPTCHA_API_KEY);
+          }
+
+          // Hard stop: if still not logged in, skip this group entirely
+          if (isLoginOrCheckpointUrl(groupPage.url()) || !(await isLoggedInState(groupPage))) {
+            console.warn(`[group ${i + 1}] ⚠️ Still not logged in after session refresh — skipping group.`);
+            continue;
           }
 
           if (engagementConfig.enabled) {
