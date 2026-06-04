@@ -429,79 +429,61 @@ async function openGroupComposer(page) {
     const alreadyOpen = await page.$('[role="dialog"] [role="textbox"], [role="dialog"] div[contenteditable="true"]');
     if (alreadyOpen) return;
 
-    // Click the composer with simple, fast selector - MORE AGGRESSIVE
-    const clicked = await page.evaluate(() => {
-      // EXCLUSION list: buttons we should NOT click
-      const EXCLUDE_KEYWORDS = ['invite', 'join', 'message', 'share', 'follow', 'create new account', 'create account', 'sign up', 'login'];
-      
-      const isExcludedButton = (text, ariaLabel) => {
+    // Find the composer button and return its bounding rect for a real mouse click
+    const buttonRect = await page.evaluate(() => {
+      const isExcluded = (text, ariaLabel) => {
         const t = (text || '').toLowerCase().trim();
         const a = (ariaLabel || '').toLowerCase().trim();
-        
-        // Only exclude if button text is PRIMARILY one of these keywords
         const EXCLUDE_EXACT = ['invite', 'join', 'message', 'follow', 'create new account', 'create account', 'sign up', 'login', 'log in'];
-        
-        return EXCLUDE_EXACT.some(keyword => {
-          // Check if text starts with or is exactly the keyword
-          return t === keyword || t.startsWith(keyword + ' ') || 
-                 a === keyword || a.startsWith(keyword + ' ');
-        });
+        return EXCLUDE_EXACT.some(k => t === k || t.startsWith(k + ' ') || a === k || a.startsWith(k + ' '));
       };
 
-      // Try the most common Facebook selectors first
-      const selectors = [
+      const candidates = [
         () => document.querySelector('[data-testid="status_composer_container"]')?.parentElement?.querySelector('[role="button"]'),
         () => document.querySelector('[data-testid="status_composer_container"]')?.querySelector('[role="button"]'),
         () => Array.from(document.querySelectorAll('[role="button"]')).find(b => {
           const aria = (b.getAttribute('aria-label') || '').toLowerCase();
           const text = (b.textContent || '').toLowerCase();
-          if (isExcludedButton(text, aria)) return false;
-          return (aria.includes('write') || aria.includes('post') || text.includes('what') || text.includes('write')) && 
-                 !aria.includes('invite') && !aria.includes('join');
+          if (isExcluded(text, aria)) return false;
+          return aria.includes('write') || aria.includes('post') || text.includes('what') || text.includes('write');
         }),
-        // AGGRESSIVE: Find large buttons in main feed area (but exclude wrong ones)
         () => Array.from(document.querySelectorAll('[role="main"] [role="button"], [role="region"] [role="button"]')).find(b => {
-          if (isExcludedButton(b.textContent, b.getAttribute('aria-label'))) return false;
+          if (isExcluded(b.textContent, b.getAttribute('aria-label'))) return false;
           const rect = b.getBoundingClientRect();
-          const looksLarge = rect.width > 80 && rect.height > 25;
-          return looksLarge && rect.top < window.innerHeight * 0.4;
+          return rect.width > 80 && rect.height > 25 && rect.top < window.innerHeight * 0.4;
         }),
-        // FALLBACK: Large button with good text content
         () => Array.from(document.querySelectorAll('[role="button"]')).find(b => {
-          if (isExcludedButton(b.textContent, b.getAttribute('aria-label'))) return false;
+          if (isExcluded(b.textContent, b.getAttribute('aria-label'))) return false;
           const rect = b.getBoundingClientRect();
           const text = (b.textContent || '').toLowerCase();
-          // Prefer buttons with composer-like text
-          if (text.includes('write') || text.includes('post') || text.includes('share') || text.includes('what')) {
-            return rect.width > 50 && rect.height > 20;
-          }
-          return rect.width > 50 && rect.height > 20 && b.textContent.length > 2;
-        })
+          return rect.width > 50 && rect.height > 20 &&
+            (text.includes('write') || text.includes('post') || text.includes('what'));
+        }),
       ];
 
-      for (const selector of selectors) {
+      for (const fn of candidates) {
         try {
-          const el = selector();
-          if (el && !isExcludedButton(el.textContent, el.getAttribute('aria-label'))) {
+          const el = fn();
+          if (el && !isExcluded(el.textContent, el.getAttribute('aria-label'))) {
             const rect = el.getBoundingClientRect();
-            if (rect.height > 15) {
-              console.log('[composer-debug] Clicking button:', el.textContent.substring(0, 30), el.getAttribute('aria-label'));
-              el.click();
-              return true;
+            if (rect.height > 15 && rect.width > 0) {
+              console.log('[composer-debug] Found button:', el.textContent.substring(0, 30).trim(), el.getAttribute('aria-label'));
+              return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
             }
           }
-        } catch (e) {
-          // Ignore selector errors
-        }
+        } catch (_) {}
       }
-      return false;
+      return null;
     });
 
-    if (!clicked) {
+    if (!buttonRect) {
       console.log(`[composer] Attempt ${attempt}/3: No button found`);
       await sleep(800);
       continue;
     }
+
+    // Use real mouse click so React's synthetic event system fires in headless mode
+    await page.mouse.click(buttonRect.x, buttonRect.y);
 
     // Wait for dialog with SHORT timeout
     try {
