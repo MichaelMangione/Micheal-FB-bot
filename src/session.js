@@ -30,7 +30,9 @@ export function isLoginOrCheckpointUrl(url) {
       p.includes('/checkpoint') ||
       p.includes('/recover') ||
       p.includes('two_factor') ||
-      p.includes('two-factor')
+      p.includes('two-factor') ||
+      p.includes('two_step_verification') ||
+      p.includes('identity_confirm')
     );
   } catch {
     return true;

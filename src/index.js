@@ -1734,6 +1734,14 @@ async function main() {
 
   // Session health check — if expired, try once to refresh; exit with failure so daemon retries
   if (!(await isLoggedInState(page))) {
+    const currentUrl = page.url();
+    if (isLoginOrCheckpointUrl(currentUrl)) {
+      console.error('[session] ❌ Facebook requires manual login or two-step verification.');
+      console.error('[session] Run with HEADLESS=false, complete login in the browser, then restart.');
+      await browser.close();
+      process.exit(1);
+    }
+
     console.log('[session] Session not active — attempting refresh before posting...');
     try {
       await page.goto('https://www.facebook.com/', { waitUntil: 'domcontentloaded', timeout: 30000 });
@@ -1744,6 +1752,13 @@ async function main() {
     } catch (sessErr) {
       console.warn(`[session] Refresh error: ${sessErr.message}`);
     }
+
+    if (isLoginOrCheckpointUrl(page.url())) {
+      console.error('[session] ❌ Ended up on login/2FA page after refresh. Manual login required.');
+      await browser.close();
+      process.exit(1);
+    }
+
     if (!(await isLoggedInState(page))) {
       console.warn('[session] ⚠️ Cannot establish session. Exiting — daemon will retry.');
       await browser.close();
