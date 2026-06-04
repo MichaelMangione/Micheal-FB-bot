@@ -3,6 +3,22 @@ import readline from 'readline';
 import { SESSION_FILE } from './config.js';
 
 export async function loadSessionFromDisk() {
+  // In production (Railway), SESSION_JSON env var holds the cookie array as JSON string
+  if (process.env.SESSION_JSON) {
+    try {
+      const data = JSON.parse(process.env.SESSION_JSON);
+      const cookies = Array.isArray(data) ? data : data.cookies || [];
+      if (cookies.length) {
+        // Write to disk so the rest of the code can use the file path normally
+        await fs.writeFile(SESSION_FILE, JSON.stringify(cookies, null, 2), 'utf8').catch(() => {});
+        console.log(`[session] Loaded ${cookies.length} cookies from SESSION_JSON env var`);
+        return cookies;
+      }
+    } catch {
+      console.warn('[session] SESSION_JSON env var is set but could not be parsed');
+    }
+  }
+
   try {
     const raw = await fs.readFile(SESSION_FILE, 'utf8');
     const data = JSON.parse(raw);
