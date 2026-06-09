@@ -1716,8 +1716,14 @@ async function main() {
   if (!(await isLoggedInState(page))) {
     const currentUrl = page.url();
     if (isLoginOrCheckpointUrl(currentUrl)) {
-      console.error('[session] ❌ Facebook requires manual login or two-step verification.');
-      console.error('[session] Run with HEADLESS=false, complete login in the browser, then restart.');
+      const isPasskey = currentUrl.includes('/webauthn/') || currentUrl.includes('/passkey') || currentUrl.includes('/reauth');
+      if (isPasskey) {
+        console.error('[session] ❌ Facebook is asking for passkey/device verification (webauthn).');
+        console.error('[session] Run locally with HEADLESS=false, complete the passkey prompt, then copy the fresh session.json to Railway SESSION_JSON.');
+      } else {
+        console.error('[session] ❌ Facebook requires manual login or two-step verification.');
+        console.error('[session] Run with HEADLESS=false, complete login in the browser, then restart.');
+      }
       await browser.close();
       process.exit(1);
     }

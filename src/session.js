@@ -48,7 +48,10 @@ export function isLoginOrCheckpointUrl(url) {
       p.includes('two_factor') ||
       p.includes('two-factor') ||
       p.includes('two_step_verification') ||
-      p.includes('identity_confirm')
+      p.includes('identity_confirm') ||
+      p.includes('/webauthn/') ||
+      p.includes('/passkey') ||
+      p.includes('/reauth')
     );
   } catch {
     return true;
