@@ -206,76 +206,74 @@ async function autoLoginIfNeeded(page) {
         return false;
       };
 
-      console.log('[login] ====== STEP 1: Looking for Email Field ======');
-      const emailField = await page.$('input[name="email"], input[type="email"], #email');
+      console.log('[login] ====== STEP 1: Looking for Login Form ======');
+      const emailField = await page.$('input[name="email"]');
+      const urlBeforeStep2 = page.url();
+
       if (emailField) {
         await emailField.click({ clickCount: 3 });
         await sleep(300);
         await page.keyboard.type(FB_EMAIL, { delay: 60 });
         console.log('[login] ✓ Email field filled');
         await sleep(500);
-        await tryClick(['button[name="login"]', 'button[type="submit"]', 'div[role="button"][aria-label*="Continue" i]']);
-        await sleep(2500);  // Wait for password field to load
+
+        // Single-page form has both fields visible at once — skip Continue click
+        const passwordAlreadyVisible = await page.$('input[name="pass"]');
+        if (passwordAlreadyVisible) {
+          console.log('[login] ✓ Single-page login form (both fields visible)');
+        } else {
+          // Two-step form: click Continue and wait for password field
+          console.log('[login] Two-step form — clicking Continue...');
+          let continueClicked = await tryClick([
+            'button[type="submit"]',
+            'div[role="button"][aria-label*="Continue" i]',
+            'div[role="button"][aria-label*="Next" i]',
+          ]);
+          if (!continueClicked) continueClicked = await tryClickByText(['Continue', 'Next']);
+          await sleep(2500);
+
+          // If URL changed the email field may be blank on the new page — re-fill
+          const urlAfterContinue = page.url();
+          if (urlAfterContinue !== urlBeforeStep2) {
+            console.log(`[login] Page changed: ${urlBeforeStep2} → ${urlAfterContinue}`);
+            const emailOnNewPage = await page.$('input[name="email"]');
+            if (emailOnNewPage) {
+              const currentVal = await emailOnNewPage.evaluate((el) => el.value || '');
+              if (!currentVal.includes('@')) {
+                console.log('[login] Re-filling email on new page...');
+                await emailOnNewPage.click({ clickCount: 3 });
+                await sleep(200);
+                await page.keyboard.type(FB_EMAIL, { delay: 60 });
+                await sleep(400);
+                const emailAdvanced = await tryClick([
+                  'button[type="submit"]',
+                  'div[role="button"][aria-label*="Continue" i]',
+                  'div[role="button"][aria-label*="Next" i]',
+                ]);
+                if (!emailAdvanced) await tryClickByText(['Continue', 'Next']);
+                await sleep(2000);
+                console.log('[login] ✓ Email re-filled on new page');
+              }
+            }
+          }
+
+          // Wait for password field to appear after Continue
+          try {
+            await page.waitForFunction(
+              () => !!document.querySelector('input[name="pass"]'),
+              { timeout: 8000 }
+            );
+            console.log('[login] ✓ Password field appeared');
+          } catch {
+            console.log('[login] Password field did not appear within 8s');
+          }
+        }
       } else {
         console.log('[login] Email field not immediately visible');
       }
 
-      console.log('[login] ====== STEP 2: Looking for Continue Button ======');
-      const urlBeforeStep2 = page.url();
-      // Try selectors first, then text-based fallback
-      let continueClicked = await tryClick([
-        'button[name="login"]',
-        'button[type="submit"]',
-        'div[role="button"][aria-label*="Continue" i]',
-        'div[role="button"][aria-label*="Log In" i]',
-      ]);
-
-      if (!continueClicked) {
-        console.log('[login] Selector-based continue failed, trying text-based...');
-        continueClicked = await tryClickByText(['Continue', 'Next', 'Log in']);
-      }
-
-      // Wait for page to transition and password field to appear
-      console.log('[login] Waiting for password field to appear...');
-      try {
-        await page.waitForFunction(
-          () => !!document.querySelector('input[name="pass"], input[type="password"], #pass'),
-          { timeout: 8000 }
-        );
-        console.log('[login] ✓ Password field appeared');
-      } catch {
-        console.log('[login] Password field did not appear within 8s');
-      }
-
-      // If clicking "Log In" navigated to a new page (e.g. /login/), the email field
-      // on that page will be empty — re-fill it before touching the password.
-      const urlAfterStep2 = page.url();
-      if (urlAfterStep2 !== urlBeforeStep2) {
-        console.log(`[login] Page changed: ${urlBeforeStep2} → ${urlAfterStep2}`);
-        const emailOnNewPage = await page.$('input[name="email"], input[type="email"], #email');
-        if (emailOnNewPage) {
-          const currentVal = await emailOnNewPage.evaluate((el) => el.value || '');
-          if (!currentVal.includes('@')) {
-            console.log('[login] Re-filling email on new page...');
-            await emailOnNewPage.click({ clickCount: 3 });
-            await sleep(200);
-            await page.keyboard.type(FB_EMAIL, { delay: 60 });
-            await sleep(400);
-            // Advance past the email step (Continue / Next button)
-            const emailAdvanced = await tryClick([
-              'button[type="submit"]',
-              'div[role="button"][aria-label*="Continue" i]',
-              'div[role="button"][aria-label*="Next" i]',
-            ]);
-            if (!emailAdvanced) await tryClickByText(['Continue', 'Next']);
-            await sleep(2000);
-            console.log('[login] ✓ Email re-filled on new page');
-          }
-        }
-      }
-
-      console.log('[login] ====== STEP 3: Looking for Password Field ======');
-      const passwordField = await page.$('input[name="pass"], input[type="password"], #pass');
+      console.log('[login] ====== STEP 2: Looking for Password Field ======');
+      const passwordField = await page.$('input[name="pass"]');
       if (passwordField) {
         await passwordField.click({ clickCount: 3 });
         await sleep(300);
